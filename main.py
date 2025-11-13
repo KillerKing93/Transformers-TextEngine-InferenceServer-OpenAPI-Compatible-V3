@@ -2693,9 +2693,10 @@ def debug_model():
         }
 
 @app.post("/debug/simple-chat", tags=["debug"])
-def debug_simple_chat(message: str = "Hello"):
+def debug_simple_chat(request: dict):
     """Simple chat endpoint without session logic"""
     try:
+        message = request.get("message", "Hello")
         engine = get_engine()
         messages = [{"role": "user", "content": message}]
         result = engine.infer(messages, max_tokens=50, temperature=0.7)
