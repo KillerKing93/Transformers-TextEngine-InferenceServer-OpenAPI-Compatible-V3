@@ -25,7 +25,7 @@ import tempfile
 import contextlib
 from typing import Any, Dict, List, Optional, Tuple, Deque, Literal
 
-from fastapi import FastAPI, HTTPException, Request, Header, Query, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Header, Query, UploadFile, File, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
@@ -1916,6 +1916,10 @@ from auth import (
     UserLogin,
     refresh_access_token
 )
+from database import get_db
+from sqlalchemy.orm import Session
+from models import Supplier, Product, User, Conversation, Message
+from utils import haversine_distance, sort_by_distance, extract_location_query, build_ai_context
 
 class AuthUserRegister(BaseModel):
     name: str
@@ -2040,11 +2044,6 @@ def get_me(current_user: dict = Depends(get_current_active_user), db: Session = 
 # ============================================================================
 # MARKETPLACE API ENDPOINTS
 # ============================================================================
-
-from database import get_db
-from sqlalchemy.orm import Session
-from models import Supplier, Product, User, Conversation, Message
-from utils import haversine_distance, sort_by_distance, extract_location_query, build_ai_context
 
 # Pydantic models for marketplace API
 class SupplierCreate(BaseModel):
