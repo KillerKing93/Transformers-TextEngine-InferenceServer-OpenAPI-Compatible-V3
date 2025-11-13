@@ -1099,7 +1099,7 @@ def _startup_load_model():
 def root():
     """
     Serve the client web UI. The UI calls an external Hugging Face Space API
-    (default is KillerKing93/Transformers-InferenceServer-OpenAPI) and does NOT
+    (default is KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3) and does NOT
     use internal server endpoints for chat. You can change the base via the input
     field or ?api= query string in the page.
     """

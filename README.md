@@ -264,21 +264,21 @@ You can use the Space's API endpoints directly or access the web UI.
 ### Option 1: Run with Docker (with-model images: CPU / NVIDIA / AMD)
 
 Tags built by CI:
-- ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-cpu
-- ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-nvidia
-- ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-amd
+- ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-cpu
+- ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-nvidia
+- ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-amd
 
 Pull:
 
 ```bash
 # CPU
-docker pull ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-cpu
+docker pull ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-cpu
 
 # NVIDIA (CUDA 12.4 wheel)
-docker pull ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-nvidia
+docker pull ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-nvidia
 
 # AMD (ROCm 6.2 wheel)
-docker pull ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-amd
+docker pull ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-amd
 ```
 
 Run:
@@ -287,19 +287,19 @@ Run:
 # CPU
 docker run -p 3000:3000 \
   -e HF_TOKEN=your_hf_token_here \
-  ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-cpu
+  ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-cpu
 
 # NVIDIA GPU (requires NVIDIA drivers + nvidia-container-toolkit on the host)
 docker run --gpus all -p 3000:3000 \
   -e HF_TOKEN=your_hf_token_here \
-  ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-nvidia
+  ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-nvidia
 
 # AMD GPU ROCm (requires ROCm 6.2+ drivers on the host; Linux only)
 # Map ROCm devices and video group (may vary by distro)
 docker run --device=/dev/kfd --device=/dev/dri --group-add video \
   -p 3000:3000 \
   -e HF_TOKEN=your_hf_token_here \
-  ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-amd
+  ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-amd
 ```
 
 Health check:
@@ -624,7 +624,7 @@ Option A — Deploy public Docker image (recommended)
 1) In Render Dashboard: New → Web Service
 2) Environment: Docker → Public Docker image
 3) Image
-   - ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-cpu
+   - ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-cpu
 4) Instance and region
    - Region: closest to your users
    - Instance type: pick a plan with at least 16 GB RAM (more if you see OOM)
@@ -673,7 +673,7 @@ services:
     name: qwen-vl-cpu
     env: docker
     image:
-      url: ghcr.io/killerking93/transformers-inferenceserver-openapi-compatible:latest-with-model-cpu
+      url: ghcr.io/killerking93/transformers-textengine-inferenceserver-openapi-compatible-v3:latest-with-model-cpu
     plan: standard
     region: oregon
     healthCheckPath: /health
