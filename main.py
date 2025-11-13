@@ -817,168 +817,74 @@ class Engine:
         temperature: float,
         cancel_event: Optional[threading.Event] = None,
     ):
-        """Manual streaming implementation for Qwen3 - TextIteratorStreamer is unreliable"""
-        print(f"[STREAM] Starting manual infer_stream with max_tokens={max_tokens}, temperature={temperature}")
+        """Streaming implementation that simulates streaming using the working infer() method"""
+        print(f"[STREAM] Starting simulated streaming with max_tokens={max_tokens}, temperature={temperature}")
         print(f"[STREAM] Input messages: {messages}")
 
-        mm_messages, images, videos = self.build_mm_messages(messages)
-        print(f"[STREAM] Built mm_messages: {mm_messages}")
-        print(f"[STREAM] Images count: {len(images) if images else 0}, Videos count: {len(videos) if videos else 0}")
-
-        # Auto-compress if needed based on context budget
-        mm_messages, ctx_info = self._auto_compress_if_needed(mm_messages, max_tokens)
-        self.last_context_info = ctx_info
-        print(f"[STREAM] After compression: {mm_messages}")
-
-        text = self.processor.apply_chat_template(
-            mm_messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        print(f"[STREAM] Applied chat template, text length: {len(text)}")
-        print(f"[STREAM] Template preview: {text[:200]}...")
-
-        proc_kwargs: Dict[str, Any] = {"text": [text], "return_tensors": "pt"}
-        if images:
-            proc_kwargs["images"] = images
-        if videos:
-            proc_kwargs["videos"] = videos
-
-        inputs = self.processor(**proc_kwargs)
-        print(f"[STREAM] Processor inputs keys: {list(inputs.keys())}")
-
+        # For Qwen3, use the working infer() method and simulate streaming
+        # by yielding chunks of the generated text
         try:
-            if str(getattr(self, "_resolved_device_map", "")).lower() == "cpu":
-                inputs = {k: (v.to("cpu") if hasattr(v, "to") else v) for k, v in inputs.items()}
-                print("[STREAM] Using CPU device")
-            else:
-                device = getattr(self.model, "device", None) or next(self.model.parameters()).device
-                inputs = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
-                print(f"[STREAM] Using device: {device}")
-        except Exception as e:
-            print(f"[STREAM] Device setup error: {e}")
-            pass
+            # Generate the complete response using the working infer() method
+            print(f"[STREAM] Generating complete response using infer() method...")
+            full_response = self.infer(messages, max_tokens, temperature)
+            print(f"[STREAM] Generated full response: '{full_response}'")
+            print(f"[STREAM] Response length: {len(full_response)} characters")
 
-        do_sample = temperature is not None and float(temperature) > 0.0
-        print(f"[STREAM] do_sample={do_sample}")
+            if not full_response.strip():
+                print("[STREAM] No response generated - returning empty")
+                return
 
-        # Manual streaming using token-by-token generation
-        import torch
-        import time
+            # Simulate streaming by yielding chunks of the response
+            import time
+            import re
 
-        # Get tokenizer for decoding
-        tokenizer = getattr(self.processor, "tokenizer", None)
-        if tokenizer is None:
-            print("[STREAM] ERROR: No tokenizer available for streaming!")
-            return
+            # Split response into natural chunks (words, phrases, sentences)
+            # This makes the streaming feel more natural than character-by-character
+            words = re.findall(r'\S+|\s+', full_response)  # Keep spaces as separate tokens
 
-        print(f"[STREAM] Tokenizer vocab size: {getattr(tokenizer, 'vocab_size', 'unknown')}")
-        print(f"[STREAM] EOS token ID: {getattr(tokenizer, 'eos_token_id', 'unknown')}")
+            chunk_size = 2  # Yield 2-3 words at a time for natural flow
+            current_text = ""
+            piece_count = 0
 
-        # Prepare generation kwargs
-        gen_kwargs = dict(
-            **inputs,
-            max_new_tokens=1,  # Generate one token at a time for streaming
-            temperature=float(temperature),
-            do_sample=do_sample,
-            use_cache=True,
-            pad_token_id=tokenizer.eos_token_id,  # Prevent padding warnings
-        )
+            print(f"[STREAM] Starting simulated streaming with {len(words)} word tokens...")
+            start_time = time.time()
+            timeout_seconds = 30  # 30 second timeout for streaming
 
-        # Optional cooperative cancellation
-        if cancel_event is not None:
-            from transformers import StoppingCriteria, StoppingCriteriaList
-            class _CancelCrit(StoppingCriteria):
-                def __init__(self, ev: threading.Event):
-                    self.ev = ev
+            for i in range(0, len(words), chunk_size):
+                # Check timeout
+                if time.time() - start_time > timeout_seconds:
+                    print(f"[STREAM] Streaming timeout after {piece_count} pieces")
+                    break
 
-                def __call__(self, input_ids, scores, **kwargs):
-                    return bool(self.ev.is_set())
+                # Check cancellation
+                if cancel_event and cancel_event.is_set():
+                    print(f"[STREAM] Streaming cancelled after {piece_count} pieces")
+                    break
 
-            gen_kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCrit(cancel_event)])
-            print("[STREAM] Added cancellation criteria")
+                # Get next chunk
+                chunk_words = words[i:i + chunk_size]
+                chunk = ''.join(chunk_words)
 
-        # Get initial input_ids for tracking
-        input_ids = inputs.get("input_ids")
-        if input_ids is None:
-            print("[STREAM] ERROR: No input_ids found!")
-            return
+                if not chunk.strip():  # Skip empty whitespace chunks
+                    continue
 
-        prompt_length = input_ids.shape[-1]
-        print(f"[STREAM] Prompt length: {prompt_length} tokens")
+                current_text += chunk
+                piece_count += 1
 
-        # Streaming generation
-        try:
-            with torch.no_grad():
-                current_ids = input_ids.clone()
-                generated_text = ""
-                piece_count = 0
-                start_time = time.time()
-                timeout_seconds = 120  # 2 minute total timeout
-                eos_token_id = tokenizer.eos_token_id
+                print(f"[STREAM] Yielding chunk #{piece_count}: '{chunk}'")
+                print(f"[STREAM] Total so far: '{current_text[-100:]}'")
 
-                print(f"[STREAM] Starting manual token-by-token generation...")
-                print(f"[STREAM] Max tokens: {max_tokens}, EOS token: {eos_token_id}")
+                yield chunk
 
-                for i in range(int(max_tokens)):
-                    # Check timeout
-                    if time.time() - start_time > timeout_seconds:
-                        print(f"[STREAM] Timeout after {piece_count} pieces")
-                        break
+                # Small delay to simulate real-time generation
+                time.sleep(0.1)
 
-                    # Check cancellation
-                    if cancel_event and cancel_event.is_set():
-                        print(f"[STREAM] Cancelled after {piece_count} pieces")
-                        break
-
-                    # Generate next token
-                    print(f"[STREAM] Generating token {i+1}/{max_tokens}")
-
-                    outputs = self.model.generate(
-                        **current_ids,
-                        **{k: v for k, v in gen_kwargs.items() if k != 'input_ids'},  # Don't pass input_ids twice
-                        return_dict_in_generate=True,
-                        output_scores=False,  # Save memory
-                    )
-
-                    # Get the new token (last one in the sequence)
-                    new_token_id = outputs.sequences[0][-1:]
-                    current_ids = torch.cat([current_ids, new_token_id.unsqueeze(0)], dim=-1)
-
-                    # Check for EOS
-                    if new_token_id.item() == eos_token_id:
-                        print(f"[STREAM] EOS token received at position {i+1}")
-                        break
-
-                    # Decode the new token
-                    try:
-                        new_token_text = tokenizer.decode(new_token_id, skip_special_tokens=True)
-                        if new_token_text.strip():  # Only yield non-whitespace content
-                            generated_text += new_token_text
-                            piece_count += 1
-                            print(f"[STREAM] Piece #{piece_count}: '{new_token_text}' (total: '{generated_text[-50:]}')")
-                            yield new_token_text
-                        else:
-                            print(f"[STREAM] Skipped whitespace: '{new_token_text}'")
-                    except Exception as decode_error:
-                        print(f"[STREAM] Decode error for token {new_token_id}: {decode_error}")
-                        # Try decoding as just the character
-                        try:
-                            new_token_text = tokenizer.decode([new_token_id.item()], skip_special_tokens=True)
-                            if new_token_text.strip():
-                                generated_text += new_token_text
-                                piece_count += 1
-                                print(f"[STREAM] Recovered piece #{piece_count}: '{new_token_text}'")
-                                yield new_token_text
-                        except:
-                            print(f"[STREAM] Could not decode token {new_token_id}, skipping")
-
-                print(f"[STREAM] Manual streaming completed")
-                print(f"[STREAM] Total pieces: {piece_count}")
-                print(f"[STREAM] Final text: '{generated_text}'")
+            print(f"[STREAM] Simulated streaming completed")
+            print(f"[STREAM] Total chunks yielded: {piece_count}")
+            print(f"[STREAM] Final text: '{current_text}'")
 
         except Exception as e:
-            print(f"[STREAM] Manual streaming error: {e}")
+            print(f"[STREAM] Simulated streaming error: {e}")
             import traceback
             traceback.print_exc()
 
