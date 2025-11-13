@@ -226,7 +226,7 @@
         <input
           id="apiBase"
           type="text"
-          placeholder="HF Space API Base, e.g. https://killerking93-transformers-textengine-inferenceserver-openapi-compatible-v3.hf.space"
+          placeholder="HF Space API Base, e.g. https://killerking93-transformers-textengine-openapi.hf.space"
         />
         <button id="saveBase" class="secondary">Save Base</button>
         <span id="health" class="small">Health: checking…</span>
@@ -312,7 +312,7 @@
     <script>
       // Config and state
       const DEFAULT_SPACE =
-        "https://killerking93-transformers-textengine-inferenceserver-openapi-compatible-v3.hf.space";
+        "https://killerking93-transformers-textengine-openapi.hf.space";
       const qs = new URLSearchParams(location.search);
       const apiBaseInput = document.getElementById("apiBase");
       const saveBaseBtn = document.getElementById("saveBase");
