@@ -1211,12 +1211,22 @@ async def chat_completions(
     if not do_stream:
         # Non-streaming path
         try:
+            print(f"[CHAT] Starting inference with {len(body.messages)} messages, max_tokens={max_tokens}, temperature={temperature}")
+            print(f"[CHAT] Engine model_id: {engine.model_id}")
             content = engine.infer(body.messages, max_tokens=max_tokens, temperature=temperature)
+            print(f"[CHAT] Inference completed, content length: {len(content)}")
+            if not content or content.strip() == "":
+                print(f"[CHAT] WARNING: Empty content from inference!")
+                content = "I apologize, but I'm unable to generate a response at the moment. Please try again."
         except ValueError as e:
             # Parsing/user payload errors from engine -> HTTP 400
+            print(f"[CHAT] ValueError during inference: {e}")
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Inference error: {e}")
+            print(f"[CHAT] Exception during inference: {type(e).__name__}: {e}")
+            import traceback
+            print(f"[CHAT] Traceback: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
 
         now = int(time.time())
         prompt_tokens = int((engine.last_context_info or {}).get("prompt_tokens") or 0)
@@ -2626,6 +2636,60 @@ Please answer the user's question about the image based on the description provi
     except Exception as e:
         print(f"[CHAT-IMG] Error: {e}")
         raise HTTPException(status_code=500, detail=f"Image chat failed: {str(e)}")
+
+
+# ============================================================================
+# DEBUG ENDPOINT
+# ============================================================================
+
+@app.get("/debug/model", tags=["debug"])
+def debug_model():
+    """Debug endpoint to check model status and perform simple generation test"""
+    try:
+        engine = get_engine()
+        return {
+            "status": "loaded",
+            "model_id": engine.model_id,
+            "device": str(getattr(engine.model, "device", "unknown")),
+            "message": "Model loaded successfully"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Model not loaded"
+        }
+
+@app.post("/debug/test-generation", tags=["debug"])
+def debug_test_generation(message: str = "Hello, how are you?"):
+    """Test simple text generation"""
+    try:
+        engine = get_engine()
+        messages = [{"role": "user", "content": message}]
+
+        print(f"[DEBUG] Testing generation with: {message}")
+        print(f"[DEBUG] Engine model_id: {engine.model_id}")
+
+        # Test with very short generation to avoid timeout
+        result = engine.infer(messages, max_tokens=50, temperature=0.7)
+
+        print(f"[DEBUG] Generated: {result[:100]}...")
+
+        return {
+            "status": "success",
+            "input": message,
+            "output": result,
+            "output_length": len(result)
+        }
+    except Exception as e:
+        print(f"[DEBUG] Generation test failed: {e}")
+        import traceback
+        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Generation test failed"
+        }
 
 
 if __name__ == "__main__":
