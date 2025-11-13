@@ -1068,6 +1068,14 @@ def get_engine() -> Engine:
 # Eager-load model at startup after definitions so it downloads/checks before serving traffic.
 @app.on_event("startup")
 def _startup_load_model():
+    # Initialize marketplace database
+    try:
+        from database import init_db
+        init_db()
+        print("[startup] Marketplace database initialized")
+    except Exception as e:
+        print(f"[startup] Database initialization failed: {e}")
+
     if EAGER_LOAD_MODEL:
         print("[startup] EAGER_LOAD_MODEL=1: initializing model and OCR engine...")
         try:
@@ -1890,6 +1898,510 @@ def cancel_session(session_id: str):
         except Exception:
             pass
     return JSONResponse({"ok": True, "session_id": session_id})
+
+
+# ============================================================================
+# MARKETPLACE API ENDPOINTS
+# ============================================================================
+
+from database import get_db
+from sqlalchemy.orm import Session
+from models import Supplier, Product, User, Conversation, Message
+from utils import haversine_distance, sort_by_distance, extract_location_query, build_ai_context
+
+# Pydantic models for marketplace API
+class SupplierCreate(BaseModel):
+    name: str = Field(..., description="Supplier contact name")
+    business_name: str = Field(..., description="Business/company name")
+    email: str = Field(..., description="Email address")
+    phone: Optional[str] = None
+    address: Optional[str] = None
+    latitude: float = Field(..., description="Latitude coordinate")
+    longitude: float = Field(..., description="Longitude coordinate")
+    city: str = Field(..., description="City name")
+    province: Optional[str] = None
+
+class SupplierResponse(BaseModel):
+    id: int
+    name: str
+    business_name: str
+    email: str
+    phone: Optional[str]
+    address: Optional[str]
+    latitude: float
+    longitude: float
+    city: str
+    province: Optional[str]
+    is_active: bool
+    registration_date: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ProductCreate(BaseModel):
+    name: str = Field(..., description="Product name")
+    description: Optional[str] = None
+    price: float = Field(..., gt=0, description="Price in IDR")
+    stock_quantity: int = Field(..., ge=0, description="Available stock")
+    category: str = Field(..., description="Product category")
+    tags: Optional[str] = Field(None, description="Comma-separated tags")
+    sku: Optional[str] = None
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = Field(None, gt=0)
+    stock_quantity: Optional[int] = Field(None, ge=0)
+    category: Optional[str] = None
+    tags: Optional[str] = None
+    is_available: Optional[bool] = None
+
+class ProductResponse(BaseModel):
+    id: int
+    supplier_id: int
+    name: str
+    description: Optional[str]
+    price: float
+    stock_quantity: int
+    category: str
+    tags: Optional[str]
+    sku: Optional[str]
+    is_available: bool
+    created_at: datetime
+    supplier_name: Optional[str] = None
+    distance_km: Optional[float] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class UserCreate(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    city: Optional[str] = None
+    province: Optional[str] = None
+    ai_access_enabled: bool = False
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str]
+    latitude: Optional[float]
+    longitude: Optional[float]
+    city: Optional[str]
+    province: Optional[str]
+    ai_access_enabled: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class AISearchRequest(BaseModel):
+    user_id: int
+    query: str = Field(..., description="Natural language query (e.g., 'laptop gaming Jakarta 10 juta')")
+    session_id: Optional[str] = None
+
+class AISearchResponse(BaseModel):
+    session_id: str
+    response: str
+    products_found: int
+    conversation_id: int
+
+
+# Supplier endpoints
+@app.post("/api/suppliers/register", tags=["marketplace"], response_model=SupplierResponse)
+def register_supplier(supplier: SupplierCreate, db: Session = Depends(get_db)):
+    """
+    Register a new supplier.
+
+    Suppliers can list and manage their products on the marketplace.
+    Location (lat/lng) is required for distance-based product recommendations.
+    """
+    # Check if email already exists
+    existing = db.query(Supplier).filter(Supplier.email == supplier.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    db_supplier = Supplier(**supplier.model_dump())
+    db.add(db_supplier)
+    db.commit()
+    db.refresh(db_supplier)
+    return db_supplier
+
+
+@app.get("/api/suppliers", tags=["marketplace"], response_model=List[SupplierResponse])
+def list_suppliers(
+    city: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    List all suppliers with optional city filter.
+    """
+    query = db.query(Supplier).filter(Supplier.is_active == True)
+    if city:
+        query = query.filter(Supplier.city.ilike(f"%{city}%"))
+    suppliers = query.offset(skip).limit(limit).all()
+    return suppliers
+
+
+@app.get("/api/suppliers/{supplier_id}", tags=["marketplace"], response_model=SupplierResponse)
+def get_supplier(supplier_id: int, db: Session = Depends(get_db)):
+    """Get supplier details by ID."""
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return supplier
+
+
+# Product endpoints
+@app.post("/api/suppliers/{supplier_id}/products", tags=["marketplace"], response_model=ProductResponse)
+def create_product(
+    supplier_id: int,
+    product: ProductCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Add a new product for a supplier.
+
+    Requires supplier_id. Products are searchable by name, category, and tags.
+    """
+    # Verify supplier exists
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    db_product = Product(supplier_id=supplier_id, **product.model_dump())
+    db.add(db_product)
+    db.commit()
+    db.refresh(db_product)
+
+    # Add supplier name to response
+    response = ProductResponse.model_validate(db_product)
+    response.supplier_name = supplier.business_name
+    return response
+
+
+@app.put("/api/products/{product_id}", tags=["marketplace"], response_model=ProductResponse)
+def update_product(
+    product_id: int,
+    product_update: ProductUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update product details (price, stock, availability, etc.)."""
+    db_product = db.query(Product).filter(Product.id == product_id).first()
+    if not db_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Update only provided fields
+    update_data = product_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_product, key, value)
+
+    db.commit()
+    db.refresh(db_product)
+
+    # Add supplier name
+    response = ProductResponse.model_validate(db_product)
+    response.supplier_name = db_product.supplier.business_name
+    return response
+
+
+@app.get("/api/products", tags=["marketplace"], response_model=List[ProductResponse])
+def list_products(
+    category: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    available_only: bool = True,
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    List products with optional filters.
+
+    Filters:
+    - category: Product category (e.g., "laptop", "smartphone")
+    - min_price, max_price: Price range in IDR
+    - available_only: Only show products with stock > 0
+    """
+    query = db.query(Product)
+
+    if available_only:
+        query = query.filter(Product.is_available == True, Product.stock_quantity > 0)
+
+    if category:
+        query = query.filter(Product.category.ilike(f"%{category}%"))
+
+    if min_price is not None:
+        query = query.filter(Product.price >= min_price)
+
+    if max_price is not None:
+        query = query.filter(Product.price <= max_price)
+
+    products = query.offset(skip).limit(limit).all()
+
+    # Add supplier names
+    results = []
+    for p in products:
+        resp = ProductResponse.model_validate(p)
+        resp.supplier_name = p.supplier.business_name
+        results.append(resp)
+
+    return results
+
+
+@app.get("/api/products/search", tags=["marketplace"], response_model=List[ProductResponse])
+def search_products(
+    q: str = Query(..., description="Search query for product name or tags"),
+    category: Optional[str] = None,
+    city: Optional[str] = None,
+    max_price: Optional[float] = None,
+    user_lat: Optional[float] = Query(None, description="User latitude for distance sorting"),
+    user_lon: Optional[float] = Query(None, description="User longitude for distance sorting"),
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Search products by keyword with location-aware sorting.
+
+    If user_lat/user_lon provided, results are sorted by distance from user.
+    """
+    query = db.query(Product).join(Supplier).filter(
+        Product.is_available == True,
+        Product.stock_quantity > 0
+    )
+
+    # Keyword search in name and tags
+    query = query.filter(
+        (Product.name.ilike(f"%{q}%")) | (Product.tags.ilike(f"%{q}%"))
+    )
+
+    if category:
+        query = query.filter(Product.category.ilike(f"%{category}%"))
+
+    if city:
+        query = query.filter(Supplier.city.ilike(f"%{city}%"))
+
+    if max_price is not None:
+        query = query.filter(Product.price <= max_price)
+
+    products = query.offset(skip).limit(limit).all()
+
+    # Convert to dict for distance sorting
+    results = []
+    for p in products:
+        product_dict = {
+            "id": p.id,
+            "supplier_id": p.supplier_id,
+            "name": p.name,
+            "description": p.description,
+            "price": p.price,
+            "stock_quantity": p.stock_quantity,
+            "category": p.category,
+            "tags": p.tags,
+            "sku": p.sku,
+            "is_available": p.is_available,
+            "created_at": p.created_at,
+            "supplier_name": p.supplier.business_name,
+            "latitude": p.supplier.latitude,
+            "longitude": p.supplier.longitude
+        }
+        results.append(product_dict)
+
+    # Sort by distance if user location provided
+    if user_lat is not None and user_lon is not None:
+        results = sort_by_distance(results, user_lat, user_lon)
+
+    # Convert back to Pydantic models
+    return [ProductResponse(**r) for r in results]
+
+
+# User endpoints
+@app.post("/api/users/register", tags=["marketplace"], response_model=UserResponse)
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user.
+
+    Users with ai_access_enabled=True can use the AI assistant for product recommendations.
+    """
+    # Check if email already exists
+    existing = db.query(User).filter(User.email == user.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    db_user = User(**user.model_dump())
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+@app.get("/api/users/{user_id}", tags=["marketplace"], response_model=UserResponse)
+def get_user(user_id: int, db: Session = Depends(get_db)):
+    """Get user details by ID."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+# AI-powered search endpoint
+@app.post("/api/chat/search", tags=["marketplace"], response_model=AISearchResponse)
+def ai_powered_search(request: AISearchRequest, db: Session = Depends(get_db)):
+    """
+    AI-powered product search with natural language.
+
+    Example queries:
+    - "Saya butuh laptop gaming di Jakarta, budget 10 juta"
+    - "smartphone murah Bandung"
+    - "laptop untuk programming, yang bagus apa?"
+
+    The AI will:
+    1. Parse the query to extract intent, location, budget
+    2. Search relevant products from database
+    3. Sort by distance from user
+    4. Provide personalized recommendations with reasoning
+    """
+    # Verify user exists and has AI access
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.ai_access_enabled:
+        raise HTTPException(status_code=403, detail="AI access not enabled for this user")
+
+    # Extract search parameters from query
+    query_lower = request.query.lower()
+
+    # Extract category keywords
+    category = None
+    for cat in ["laptop", "smartphone", "tablet", "monitor", "keyboard", "mouse", "printer"]:
+        if cat in query_lower:
+            category = cat
+            break
+
+    # Extract price/budget
+    max_price = None
+    price_patterns = [
+        r'budget\s+(\d+)\s*(?:juta|jt)',
+        r'(\d+)\s*(?:juta|jt)',
+        r'[<≤]\s*(\d+)\s*(?:juta|jt)',
+        r'max\s+(\d+)\s*(?:juta|jt)'
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            max_price = float(match.group(1)) * 1_000_000  # Convert juta to full number
+            break
+
+    # Extract city from query or use user's city
+    city = extract_location_query(request.query)
+    if not city and user.city:
+        city = user.city
+
+    # Search products in database
+    query_db = db.query(Product).join(Supplier).filter(
+        Product.is_available == True,
+        Product.stock_quantity > 0
+    )
+
+    if category:
+        query_db = query_db.filter(Product.category.ilike(f"%{category}%"))
+
+    if max_price:
+        query_db = query_db.filter(Product.price <= max_price)
+
+    if city:
+        query_db = query_db.filter(Supplier.city.ilike(f"%{city}%"))
+
+    products = query_db.limit(10).all()
+
+    # Convert to dict and sort by distance
+    product_list = []
+    for p in products:
+        product_dict = {
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+            "price": p.price,
+            "stock_quantity": p.stock_quantity,
+            "category": p.category,
+            "tags": p.tags,
+            "supplier_name": p.supplier.business_name,
+            "latitude": p.supplier.latitude,
+            "longitude": p.supplier.longitude
+        }
+        product_list.append(product_dict)
+
+    # Sort by distance if user has location
+    if user.latitude and user.longitude:
+        product_list = sort_by_distance(product_list, user.latitude, user.longitude)
+
+    # Build AI context
+    ai_context = build_ai_context(product_list, request.query)
+
+    # Get or create conversation
+    session_id = request.session_id or f"user_{user.id}_{int(datetime.utcnow().timestamp())}"
+    conversation = db.query(Conversation).filter(Conversation.session_id == session_id).first()
+
+    if not conversation:
+        conversation = Conversation(
+            user_id=user.id,
+            session_id=session_id,
+            title=request.query[:50]  # First 50 chars as title
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+
+    # Save user message
+    user_message = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=request.query
+    )
+    db.add(user_message)
+
+    # Call AI model with context
+    try:
+        engine = get_engine()
+
+        # Build messages with context injection
+        messages = [
+            {
+                "role": "system",
+                "content": ai_context
+            },
+            {
+                "role": "user",
+                "content": request.query
+            }
+        ]
+
+        # Generate AI response
+        ai_response = engine.infer(messages, max_tokens=512, temperature=0.7)
+
+        # Save assistant message
+        assistant_message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=ai_response
+        )
+        db.add(assistant_message)
+        db.commit()
+
+        return AISearchResponse(
+            session_id=session_id,
+            response=ai_response,
+            products_found=len(product_list),
+            conversation_id=conversation.id
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI inference failed: {str(e)}")
 
 
 if __name__ == "__main__":
