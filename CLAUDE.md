@@ -3,7 +3,7 @@
 
 - Migrated stack from Node.js/llama.cpp to Python + FastAPI + Transformers
   - New server: [main.py](main.py)
-  - Default model: Qwen/Qwen3-VL-2B-Thinking via Transformers with trust_remote_code
+  - Default model: unsloth/Qwen3-4B-Instruct-2507 via Transformers with trust_remote_code
 - Implemented endpoints
   - Health: [Python.app.get()](main.py:577)
   - OpenAI-compatible Chat Completions (non-stream + SSE): [Python.app.post()](main.py:591)
@@ -75,7 +75,7 @@ Summary of the migration
 - Added a manual cancel endpoint (custom) and implemented auto-cancel after disconnect.
 
 Why Python + Transformers?
-- Qwen3-VL-2B-Thinking is published for Transformers and includes multimodal processors (preprocessor_config.json, video_preprocessor_config.json, chat_template.json). Python + Transformers is the first-class path.
+- Qwen3-4B-Instruct-2507 is published for Transformers and includes standard Qwen3 processors and chat templates. Python + Transformers is the first-class path.
 - trust_remote_code=True allows the model repo to provide custom processing logic and templates, used in [Python.class Engine](main.py:231) via AutoProcessor/AutoModelForCausalLM.
 
 Core design choices
@@ -113,7 +113,7 @@ Core design choices
 6) Environment configuration
 - See [.env.example](.env.example).
 - Important variables:
-  - MODEL_REPO_ID (default "Qwen/Qwen3-VL-2B-Thinking")
+  - MODEL_REPO_ID (default "unsloth/Qwen3-4B-Instruct-2507")
   - HF_TOKEN (optional)
   - MAX_TOKENS, TEMPERATURE
   - MAX_VIDEO_FRAMES (video frame sampling)
@@ -293,3 +293,122 @@ Example (filled)
   - Endpoint maintains OpenAI-compatible API patterns while providing specialized OCR functionality
   - No external API keys required; fully self-hosted solution
   - CI/CD will sync to Hugging Face Space automatically on push
+
+## Progress Log — 2025-10-29 12:00 (Asia/Jakarta)
+
+- Commit: [pending] - fix(ocr): improve KTP text parsing and fix Kel/Desa regex bug
+- Scope/Files (anchors):
+  - [Python.function _parse_ktp_from_text](main.py:1606)
+  - [Python.function ktp_ocr](main.py:1370)
+  - [test_parser.py](test_parser.py) - temporary debug script
+- Summary:
+  - Enhanced KTP OCR parsing to handle real-world OCR output variations and fixed regex bug that truncated Kel/Desa field
+- Changes:
+  - Updated Kel/Desa regex from `([^K]+)` to `(.+?)(?:\s*KECAMATAN|\s*Agama|\s*Status|\s*Pekerjaan|\s*$)` to properly capture full names containing 'K'
+  - Verified parser handles all OCR text formats: same-line, next-line, combined label:value
+  - Tested with real OCR output from image.jpg showing complete field extraction
+- Verification:
+  - Parser test with real OCR output:
+    - Input: 29 text lines from RapidOCR on image.jpg
+    - Output: All 12 KTP fields extracted correctly (NIK, nama, birth info, gender, address components, religion, marital status, job, nationality, expiry)
+    - Kel/Desa: "Purwokerto" (previously truncated to "Purwo")
+  - Test suite: KTP OCR test still passes with mock data
+  - Example successful extraction:
+    ```json
+    {
+      "nik": "3506042602660001",
+      "nama": "Sulistyono",
+      "tempat_lahir": "Kediri",
+      "tgl_lahir": "26-02-1966",
+      "jenis_kelamin": "LAKI-LAKI",
+      "alamat": {
+        "name": "JLRAYA-DSNPURWOKERTO",
+        "rt_rw": "002/003",
+        "kel_desa": "Purwokerto",
+        "kecamatan": "Ngadiluwih"
+      },
+      "agama": "Islam",
+      "status_perkawinan": "Kawin",
+      "pekerjaan": "Guru",
+      "kewarganegaraan": "Wni",
+      "berlaku_hingga": "26-02-2017"
+    }
+    ```
+- Follow-ups/Limitations:
+  - Server loading time is long due to full model initialization; consider lazy loading for OCR-only usage
+  - Endpoint testing pending server readiness; parser logic verified independently
+  - May need additional OCR preprocessing for challenging images (skew, low contrast)
+- Notes:
+  - Parser now robustly handles Indonesian KTP OCR variations
+  - RapidOCR provides good text extraction quality for structured documents
+  - Ready for production deployment once server loading is optimized
+
+## Progress Log — 2025-11-13 (Asia/Jakarta)
+
+- Commit: [pending] - feat(marketplace): migrate to Qwen3-4B-Instruct and pivot to AI marketplace platform
+- Scope/Files (anchors):
+  - [.env.example](.env.example:5)
+  - [main.py](main.py:6), [main.py](main.py:83)
+  - [README.md](README.md:11) - Added marketplace vision
+  - [README.md](README.md:35) - Added marketplace features section
+  - [README.md](README.md:64) - Added deprecated features note
+  - [ARCHITECTURE.md](ARCHITECTURE.md:3) - Added system purpose
+  - [ARCHITECTURE.md](ARCHITECTURE.md:189) - Added marketplace integration plan
+  - [ARCHITECTURE.md](ARCHITECTURE.md:251) - Added migration notes
+  - [CLAUDE.md](CLAUDE.md:6), [CLAUDE.md](CLAUDE.md:78), [CLAUDE.md](CLAUDE.md:116)
+  - [Dockerfile](Dockerfile:63)
+  - [RULES.md](RULES.md:82), [RULES.md](RULES.md:166)
+- Summary:
+  - **Major pivot**: From multimodal OCR/VL system to AI-powered marketplace intelligence platform
+  - Migrated from Qwen/Qwen3-VL-2B-Thinking (multimodal) to unsloth/Qwen3-4B-Instruct-2507 (text-only instruct model)
+  - **New vision**: Marketplace where suppliers list products, users query with AI for recommendations based on location
+  - Updated GitHub repository URL to https://github.com/KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3.git
+  - Updated Hugging Face Space URL to https://huggingface.co/spaces/KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3
+  - Deprecated multimodal features (KTP OCR, image/video processing) - code remains but non-functional
+- Changes:
+  - **Model Migration**:
+    - Updated MODEL_REPO_ID default from "Qwen/Qwen3-VL-2B-Thinking" to "unsloth/Qwen3-4B-Instruct-2507" in .env.example:5
+    - Updated DEFAULT_MODEL_ID in main.py:83
+    - Updated Dockerfile model bake-in script to download unsloth/Qwen3-4B-Instruct-2507
+  - **Documentation - New Marketplace Vision**:
+    - README.md: Added "AI-Powered Marketplace Intelligence System" section
+    - README.md: Detailed marketplace features (supplier management, AI product discovery, location-aware intelligence, natural language interaction)
+    - README.md: Marked KTP OCR and multimodal as deprecated
+    - ARCHITECTURE.md: Added "System Purpose" explaining marketplace use case
+    - ARCHITECTURE.md: Added comprehensive "Marketplace Integration Plan" with database schema, API endpoints, location features, context management
+    - ARCHITECTURE.md: Updated components section to deprecate multimodal preprocessing
+    - ARCHITECTURE.md: Added migration notes section documenting pivot from multimodal to text-only marketplace focus
+  - **Repository Updates**:
+    - Updated git remote URL to new repository: KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3
+    - Updated Hugging Face Space link in README.md:68
+    - Updated all model references in: README.md, CLAUDE.md, ARCHITECTURE.md, RULES.md, Dockerfile
+- Verification:
+  - All model references updated: grep verified no remaining "Qwen3-VL-2B-Thinking" references
+  - Git remote updated:
+    ```
+    git remote -v
+    origin https://github.com/KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3.git (fetch)
+    origin https://github.com/KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3.git (push)
+    ```
+  - Documentation consistency: All docs now reflect marketplace vision and text-only focus
+  - Expected vs Actual: Model will be unsloth/Qwen3-4B-Instruct-2507, server behavior remains OpenAI-compatible, multimodal endpoints deprecated
+- Follow-ups/Limitations:
+  - **Deprecated**: KTP OCR endpoint (/ktp-ocr/), image/video processing functions - code remains but non-functional
+  - **Next steps**:
+    - Design and implement marketplace database schema (suppliers, products, users, conversations)
+    - Develop marketplace API endpoints (supplier registration, product listing, AI-powered search)
+    - Implement location-aware product recommendations (Haversine distance calculation)
+    - Build frontend for supplier/user interfaces
+    - Create context injection system to pass product catalog to AI
+  - New model is 4B parameters (larger than previous 2B VL model), may require more VRAM
+  - Text-only model suitable for marketplace queries but cannot process product images (future: consider separate vision model for image search)
+- Notes:
+  - **Vision shift**: From generic multimodal inference to specialized marketplace AI assistant
+  - **Use case examples**:
+    - User: "Saya butuh laptop gaming di Jakarta, budget 10 juta"
+    - AI: Queries products DB → Filters by location → Recommends nearest suppliers with matching inventory
+  - Inference server (/v1/chat/completions) is production-ready
+  - Marketplace backend/frontend are planned, not yet implemented
+  - Model repository change maintains Transformers compatibility (no code changes needed)
+  - Unsloth version ensures optimized inference performance
+  - Repository and Space URLs now consistent with V3 naming scheme

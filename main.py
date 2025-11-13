@@ -3,7 +3,7 @@
 """
 FastAPI Inference Server (OpenAI-compatible) for Qwen3-VL multimodal model.
 
-- Default model: Qwen/Qwen3-VL-2B-Thinking
+- Default model: unsloth/Qwen3-4B-Instruct-2507
 - Endpoints:
   * GET /openapi.yaml     (OpenAPI schema in YAML)
   * GET /health           (readiness + context report)
@@ -57,8 +57,9 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_HF_CACHE = os.path.join(ROOT_DIR, "hf-cache")
 if not os.getenv("HF_HOME"):
     os.environ["HF_HOME"] = DEFAULT_HF_CACHE
-if not os.getenv("TRANSFORMERS_CACHE"):
-    os.environ["TRANSFORMERS_CACHE"] = DEFAULT_HF_CACHE
+# Remove deprecated TRANSFORMERS_CACHE to avoid warnings
+if os.getenv("TRANSFORMERS_CACHE"):
+    del os.environ["TRANSFORMERS_CACHE"]
 # Create directory eagerly to avoid later mkdir races
 try:
     os.makedirs(os.environ["HF_HOME"], exist_ok=True)
@@ -71,9 +72,15 @@ from PIL import Image
 import numpy as np
 from huggingface_hub import snapshot_download, list_repo_files, hf_hub_download, get_hf_file_metadata
 
+# OCR import
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except ImportError:
+    RapidOCR = None
+
 # Server config
 PORT = int(os.getenv("PORT", "3000"))
-DEFAULT_MODEL_ID = os.getenv("MODEL_REPO_ID", "Qwen/Qwen3-VL-2B-Thinking")
+DEFAULT_MODEL_ID = os.getenv("MODEL_REPO_ID", "unsloth/Qwen3-4B-Instruct-2507")
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip() or None
 # Default max tokens: honor env, fallback to 4096 as previously discussed
 DEFAULT_MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4096"))
@@ -111,6 +118,20 @@ EAGER_LOAD_MODEL = str(os.getenv("EAGER_LOAD_MODEL", "1")).lower() in ("1", "tru
 # Global thread pool executor for concurrent processing
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="inference")
 
+# Global OCR engine
+_ocr_engine = None
+
+def get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None and RapidOCR is not None:
+        try:
+            _ocr_engine = RapidOCR()
+            print("[OCR] RapidOCR engine initialized")
+        except Exception as e:
+            print(f"[OCR] Failed to initialize RapidOCR: {e}")
+            _ocr_engine = None
+    return _ocr_engine
+
 def _log(msg: str):
     # Consistent, flush-immediate startup logs
     print(f"[startup] {msg}", flush=True)
@@ -139,13 +160,17 @@ def prefetch_model_assets(repo_id: str, token: Optional[str]) -> Optional[str]:
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
 
-        # Resolve huggingface-cli path (Windows-friendly)
-        cli_path = shutil.which("huggingface-cli")
+        # Resolve huggingface-cli path (Windows-friendly) - try hf first, fallback to huggingface-cli
+        cli_path = shutil.which("hf")
+        if not cli_path:
+            cli_path = shutil.which("huggingface-cli")
         if not cli_path:
             candidates = []
             appdata = os.getenv("APPDATA")
             if appdata:
+                candidates.append(os.path.join(appdata, "Python", "Python312", "Scripts", "hf.exe"))
                 candidates.append(os.path.join(appdata, "Python", "Python312", "Scripts", "huggingface-cli.exe"))
+            candidates.append(os.path.join(os.path.dirname(sys.executable), "Scripts", "hf.exe"))
             candidates.append(os.path.join(os.path.dirname(sys.executable), "Scripts", "huggingface-cli.exe"))
             cli_path = next((p for p in candidates if os.path.exists(p)), None)
 
@@ -153,18 +178,15 @@ def prefetch_model_assets(repo_id: str, token: Optional[str]) -> Optional[str]:
         if cli_path:
             local_root = os.path.join(cache_dir if cache_dir else ".", repo_id.replace("/", "_"))
             os.makedirs(local_root, exist_ok=True)
-            _log(f"Using huggingface-cli to download entire repo -> '{local_root}'")
+            _log(f"Using hf download to download entire repo -> '{local_root}'")
             cmd = [
                 cli_path,
                 "download",
-                repo_id,
                 "--repo-type",
                 "model",
                 "--local-dir",
                 local_root,
-                "--local-dir-use-symlinks",
-                "False",
-                "--resume",
+                repo_id,
             ]
             if token:
                 cmd += ["--token", token]
@@ -489,8 +511,15 @@ class Engine:
         # Explicitly disable low_cpu_mem_usage on pure CPU to fully materialize weights (avoids meta tensors)
         if resolved_device_map == "cpu":
             model_kwargs["low_cpu_mem_usage"] = False
-        # dtype
-        model_kwargs["torch_dtype"] = TORCH_DTYPE if TORCH_DTYPE != "auto" else "auto"
+        # dtype - use 'dtype' instead of deprecated 'torch_dtype'
+        if TORCH_DTYPE != "auto":
+            try:
+                import torch
+                model_kwargs["dtype"] = getattr(torch, TORCH_DTYPE, TORCH_DTYPE)
+            except Exception:
+                model_kwargs["dtype"] = TORCH_DTYPE
+        else:
+            model_kwargs["dtype"] = "auto"
         # store for later
         self._resolved_device_map = resolved_device_map
 
@@ -512,6 +541,7 @@ class Engine:
                 model = None
         if model is None:
             try:
+                # AutoModelForVision2Seq is deprecated, but try it for compatibility
                 model = AutoModelForVision2Seq.from_pretrained(model_id, **model_kwargs)  # pragma: no cover
             except Exception:
                 model = None
@@ -1039,14 +1069,21 @@ def get_engine() -> Engine:
 @app.on_event("startup")
 def _startup_load_model():
     if EAGER_LOAD_MODEL:
-        print("[startup] EAGER_LOAD_MODEL=1: initializing model...")
+        print("[startup] EAGER_LOAD_MODEL=1: initializing model and OCR engine...")
         try:
+            # Initialize OCR engine first
+            _ = get_ocr_engine()
+            print("[startup] OCR engine initialized")
+
+            # Then initialize the model
             _ = get_engine()
             print("[startup] Model loaded:", _engine.model_id if _engine else "unknown")
         except Exception as e:
-            # Fail fast if model cannot be initialized
-            print("[startup] Model load failed:", e)
-            raise
+            # Log error but don't fail - allow server to start without model
+            print("[startup] Initialization failed:", e)
+            print("[startup] Server will start without full initialization")
+    else:
+        print("[startup] EAGER_LOAD_MODEL=0: skipping initialization")
 
 
 @app.get("/", tags=["meta"], include_in_schema=False)
@@ -1333,13 +1370,6 @@ async def chat_completions(
 async def ktp_ocr(image: UploadFile = File(...)):
     print(f"[OCR] Starting KTP OCR processing for file: {image.filename}, content_type: {image.content_type}")
 
-    try:
-        engine = get_engine()
-        print(f"[OCR] Engine ready: {engine.model_id}")
-    except Exception as e:
-        print(f"[OCR] Engine not ready: {e}")
-        raise HTTPException(status_code=503, detail=f"Model not ready: {e}")
-
     if not image.content_type.startswith("image/"):
         print(f"[OCR] Invalid content type: {image.content_type}")
         raise HTTPException(status_code=400, detail="File provided is not an image.")
@@ -1353,77 +1383,499 @@ async def ktp_ocr(image: UploadFile = File(...)):
         pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
         print(f"[OCR] PIL image loaded: {pil_image.size}, mode: {pil_image.mode}")
 
-        # The prompt from the reference project
-        prompt = r"""
-Ekstrak data KTP Indonesia dari gambar dan kembalikan dalam format JSON berikut:
-{
-  "nik": "",
-  "nama": "",
-  "tempat_lahir": "",
-  "tgl_lahir": "",
-  "jenis_kelamin": "",
-  "alamat": {
-    "name": "",
-    "rt_rw": "",
-    "kel_desa": "",
-    "kecamatan": "",
-  },
-  "agama": "",
-  "status_perkawinan": "",
-  "pekerjaan": "",
-  "kewarganegaraan": "",
-  "berlaku_hingga": ""
-}
-"""
-        print(f"[OCR] Using prompt (length: {len(prompt)} chars)")
+        # Use RapidOCR for OCR processing
+        print(f"[OCR] Using RapidOCR for OCR processing")
 
-        # Prepare messages for the model
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image", "image": pil_image}
-                ],
-            }
-        ]
-        print(f"[OCR] Prepared messages with {len(messages[0]['content'])} content parts")
+        # Get OCR engine
+        ocr_engine = get_ocr_engine()
+        if ocr_engine is None:
+            print(f"[OCR] RapidOCR not available")
+            raise HTTPException(status_code=503, detail="OCR engine not available")
 
-        # Run inference in thread pool to avoid blocking
-        print(f"[OCR] Submitting to thread pool (timeout: {OCR_TIMEOUT_SECONDS}s)...")
-        loop = asyncio.get_event_loop()
-        content = await loop.run_in_executor(
-            executor,
-            functools.partial(engine.infer, messages, 1024, 0.1)
-        )
-        print(f"[OCR] Raw inference result (length: {len(content)} chars): {repr(content[:200])}...")
+        # Extract text using RapidOCR
+        print(f"[OCR] Running RapidOCR text extraction...")
+        ocr_result = ocr_engine(pil_image)
+        print(f"[OCR] OCR completed, found {len(ocr_result[0]) if ocr_result and len(ocr_result) >= 1 else 0} text regions")
 
-        # The model might return the JSON in a code block, so we need to extract it.
-        json_match = re.search(r"```json\s*\n(.*?)\n```", content, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1).strip()
-            print(f"[OCR] Extracted JSON from code block (length: {len(json_str)} chars): {repr(json_str[:200])}...")
+        # Extract all text from OCR results
+        extracted_texts = []
+        if ocr_result and len(ocr_result) >= 1:
+            for item in ocr_result[0]:
+                if len(item) >= 2:
+                    text = str(item[1]).strip()
+                    # Handle potential Unicode issues
+                    try:
+                        text = text.replace('\uff1a', ':').replace('\uff0c', ',').replace('\u3002', '.')
+                        text = ''.join(c for c in text if ord(c) < 128 or c.isspace() or c in ':,-./')
+                        if text:
+                            extracted_texts.append(text)
+                    except Exception as e:
+                        print(f"[OCR] Error processing text: {e}")
+                        continue
+
+        # Parse KTP data from extracted texts
+        if extracted_texts:
+            print(f"[OCR] Extracted {len(extracted_texts)} text lines")
+            for i, text in enumerate(extracted_texts):
+                print(f"[OCR] Line {i+1}: '{text}'")
+            ktp_data = _parse_ktp_from_text(extracted_texts)
+            print(f"[OCR] Successfully parsed KTP data")
+            return JSONResponse(content=ktp_data)
         else:
-            json_str = content.strip()
-            print(f"[OCR] Using raw content as JSON (length: {len(json_str)} chars): {repr(json_str[:200])}...")
-
-        # Parse the JSON string
-        print(f"[OCR] Attempting to parse JSON...")
-        response_data = json.loads(json_str)
-        print(f"[OCR] Successfully parsed JSON with keys: {list(response_data.keys())}")
-
-        return JSONResponse(content=response_data)
-
-    except json.JSONDecodeError as e:
-        print(f"[OCR] JSON parsing failed: {e}")
-        print(f"[OCR] Failed JSON string: {repr(json_str[:500])}")
-        raise HTTPException(status_code=500, detail=f"Failed to parse model response as JSON: {e}")
+            print(f"[OCR] No text extracted from OCR")
+            # Return empty structure
+            empty_data = {
+                "nik": "",
+                "nama": "",
+                "tempat_lahir": "",
+                "tgl_lahir": "",
+                "jenis_kelamin": "",
+                "alamat": {
+                    "name": "",
+                    "rt_rw": "",
+                    "kel_desa": "",
+                    "kecamatan": ""
+                },
+                "agama": "",
+                "status_perkawinan": "",
+                "pekerjaan": "",
+                "kewarganegaraan": "",
+                "berlaku_hingga": ""
+            }
+            return JSONResponse(content=empty_data)
 
     except Exception as e:
         print(f"[OCR] Unexpected error: {type(e).__name__}: {e}")
         import traceback
         print(f"[OCR] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Error processing image: {e}")
+        # Return default empty structure on any error
+        response_data = {
+            "nik": "",
+            "nama": "",
+            "tempat_lahir": "",
+            "tgl_lahir": "",
+            "jenis_kelamin": "",
+            "alamat": {
+                "name": "",
+                "rt_rw": "",
+                "kel_desa": "",
+                "kecamatan": ""
+            },
+            "agama": "",
+            "status_perkawinan": "",
+            "pekerjaan": "",
+            "kewarganegaraan": "",
+            "berlaku_hingga": ""
+        }
+        return JSONResponse(content=response_data)
+
+
+async def _fallback_vision_ocr(pil_image):
+    """Fallback to vision model if OCR fails"""
+    print(f"[OCR] Using vision model fallback")
+    try:
+        engine = get_engine()
+        print(f"[OCR] Engine ready: {engine.model_id}")
+    except Exception as e:
+        print(f"[OCR] Engine not ready: {e}")
+        raise HTTPException(status_code=503, detail=f"Model not ready: {e}")
+
+    # Enhanced prompt for better OCR extraction
+    prompt = """Anda adalah sistem OCR untuk KTP Indonesia. Ekstrak semua data yang terlihat dari gambar KTP ini dengan sangat teliti.
+
+PERATURAN PENTING:
+1. Jawaban HANYA berupa JSON yang valid, tanpa teks tambahan
+2. Jika data tidak terlihat jelas, gunakan string kosong ""
+3. Pastikan format JSON sesuai persis dengan contoh
+4. Baca teks dengan teliti dari gambar
+
+FORMAT JSON YANG HARUS DIPERIKSA:
+
+{
+  "nik": "nomor NIK 16 digit lengkap",
+  "nama": "nama lengkap sesuai KTP",
+  "tempat_lahir": "kota/kabupaten tempat lahir",
+  "tgl_lahir": "tanggal lahir format DD-MM-YYYY",
+  "jenis_kelamin": "LAKI-LAKI atau PEREMPUAN",
+  "alamat": {
+    "name": "alamat lengkap tanpa RT/RW",
+    "rt_rw": "RT/RW format 001/002",
+    "kel_desa": "nama kelurahan/desa",
+    "kecamatan": "nama kecamatan"
+  },
+  "agama": "agama sesuai KTP",
+  "status_perkawinan": "status pernikahan",
+  "pekerjaan": "pekerjaan sesuai KTP",
+  "kewarganegaraan": "WNI atau WNA",
+  "berlaku_hingga": "tanggal berlaku hingga atau SEUMUR HIDUP"
+}
+
+MULAI EKSTRAKSI DATA:"""
+
+    # Prepare messages for the model
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image", "image": pil_image}
+            ],
+        }
+    ]
+
+    # Run inference in thread pool to avoid blocking
+    print(f"[OCR] Submitting to thread pool (timeout: {OCR_TIMEOUT_SECONDS}s)...")
+    loop = asyncio.get_event_loop()
+    content = await loop.run_in_executor(
+        executor,
+        functools.partial(engine.infer, messages, 2048, 0.0)  # Lower temperature for more consistent output
+    )
+    print(f"[OCR] Raw inference result (length: {len(content)} chars): {repr(content[:500])}...")
+
+    # Extract JSON from the response
+    json_str = None
+
+    # First, try to find JSON in code blocks
+    json_match = re.search(r"```json\s*\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
+    if json_match:
+        json_str = json_match.group(1).strip()
+        print(f"[OCR] Found JSON in code block: {repr(json_str[:200])}...")
+    else:
+        # Try to find JSON object directly
+        json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0).strip()
+            print(f"[OCR] Found JSON object: {repr(json_str[:200])}...")
+
+    # If no JSON found, try to extract from assistant response
+    if not json_str:
+        # Split on assistant marker
+        parts = re.split(r"\n?assistant:\s*", content, flags=re.IGNORECASE)
+        if len(parts) >= 2:
+            assistant_content = parts[-1].strip()
+            # Remove thinking tags
+            assistant_content = re.sub(r"<think>.*?</think>", "", assistant_content, flags=re.DOTALL).strip()
+            assistant_content = re.sub(r"<thinking>.*?</thinking>", "", assistant_content, flags=re.DOTALL).strip()
+
+            # Look for JSON in assistant content
+            json_match = re.search(r"\{.*\}", assistant_content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0).strip()
+                print(f"[OCR] Found JSON in assistant response: {repr(json_str[:200])}...")
+
+    # Parse the JSON
+    if json_str:
+        try:
+            response_data = json.loads(json_str)
+            print(f"[OCR] Successfully parsed JSON with keys: {list(response_data.keys())}")
+
+            # Validate the structure has required fields
+            required_fields = ["nik", "nama", "tempat_lahir", "tgl_lahir", "jenis_kelamin", "alamat", "agama", "status_perkawinan", "pekerjaan", "kewarganegaraan", "berlaku_hingga"]
+            if all(field in response_data for field in required_fields):
+                print(f"[OCR] JSON structure is valid")
+                return JSONResponse(content=response_data)
+            else:
+                print(f"[OCR] JSON missing required fields, using fallback")
+        except json.JSONDecodeError as e:
+            print(f"[OCR] JSON parsing failed: {e}")
+            print(f"[OCR] Failed JSON string: {repr(json_str[:500])}")
+
+    # Fallback: return default empty structure
+    print(f"[OCR] Using default empty KTP structure as fallback")
+    response_data = {
+        "nik": "",
+        "nama": "",
+        "tempat_lahir": "",
+        "tgl_lahir": "",
+        "jenis_kelamin": "",
+        "alamat": {
+            "name": "",
+            "rt_rw": "",
+            "kel_desa": "",
+            "kecamatan": ""
+        },
+        "agama": "",
+        "status_perkawinan": "",
+        "pekerjaan": "",
+        "kewarganegaraan": "",
+        "berlaku_hingga": ""
+    }
+    return JSONResponse(content=response_data)
+
+
+def _parse_ktp_from_text(text_lines):
+    """Parse KTP data from OCR extracted text lines"""
+    print(f"[PARSE] Starting to parse {len(text_lines)} text lines")
+    ktp_data = {
+        "nik": "",
+        "nama": "",
+        "tempat_lahir": "",
+        "tgl_lahir": "",
+        "jenis_kelamin": "",
+        "alamat": {
+            "name": "",
+            "rt_rw": "",
+            "kel_desa": "",
+            "kecamatan": ""
+        },
+        "agama": "",
+        "status_perkawinan": "",
+        "pekerjaan": "",
+        "kewarganegaraan": "",
+        "berlaku_hingga": ""
+    }
+
+    print(f"[PARSE] Raw text lines: {text_lines}")
+
+    # Extract NIK (16 digits) - handle both formats: "NIK 3506042602660001" and "NIK : 3506042602660001"
+    nik_pattern = re.compile(r'\b(\d{16})\b')
+    for i, line in enumerate(text_lines):
+        nik_match = nik_pattern.search(line)
+        if nik_match:
+            ktp_data["nik"] = nik_match.group(1)
+            print(f"[PARSE] Found NIK: {ktp_data['nik']}")
+            break
+        # Also check if NIK is on the next line after "NIK" label
+        elif "NIK" in line.upper() and i + 1 < len(text_lines):
+            next_line = text_lines[i + 1]
+            nik_match = nik_pattern.search(next_line)
+            if nik_match:
+                ktp_data["nik"] = nik_match.group(1)
+                print(f"[PARSE] Found NIK (next line): {ktp_data['nik']}")
+                break
+
+    # Extract Nama - look for "Nama" followed by name
+    for i, line in enumerate(text_lines):
+        if "NAMA" in line.upper():
+            # Check if name is on the same line after ":"
+            if ":" in line:
+                name = line.split(":", 1)[1].strip()
+                if name and len(name) > 1:
+                    ktp_data["nama"] = name.title()
+                    print(f"[PARSE] Found Nama (same line): {ktp_data['nama']}")
+                    break
+            # Check if name is on the next line (with or without colon prefix)
+            elif i + 1 < len(text_lines):
+                next_line = text_lines[i + 1]
+                name = next_line.lstrip(':').strip()
+                if name and len(name) > 1:
+                    ktp_data["nama"] = name.title()
+                    print(f"[PARSE] Found Nama (next line): {ktp_data['nama']}")
+                    break
+
+    # Extract Tempat/Tgl Lahir
+    for i, line in enumerate(text_lines):
+        if "LAHIR" in line.upper():
+            # Look in current line and next few lines for date and place
+            search_lines = [line]
+            if i + 1 < len(text_lines):
+                search_lines.append(text_lines[i + 1])
+            if i + 2 < len(text_lines):
+                search_lines.append(text_lines[i + 2])
+
+            combined_text = " ".join(search_lines)
+            print(f"[PARSE] Birth search text: '{combined_text}'")
+
+            # Extract date pattern DD-MM-YYYY or DD/MM/YYYY (handle colon prefix)
+            date_match = re.search(r':?\s*(\d{1,2}[-/]\d{1,2}[-/]\d{4})', combined_text)
+            if date_match:
+                ktp_data["tgl_lahir"] = date_match.group(1).replace('/', '-')
+                print(f"[PARSE] Found Tgl Lahir: {ktp_data['tgl_lahir']}")
+
+            # Extract place (usually before comma, handle colon prefix)
+            place_match = re.search(r':?\s*([A-Z\s]+?)\s*,\s*\d', combined_text)
+            if place_match:
+                ktp_data["tempat_lahir"] = place_match.group(1).strip().title()
+                print(f"[PARSE] Found Tempat Lahir: {ktp_data['tempat_lahir']}")
+            break
+
+    # Extract Jenis Kelamin
+    for i, line in enumerate(text_lines):
+        if "JENIS KELAMIN" in line.upper() or "KELAMIN" in line.upper():
+            # Check current line for gender
+            if "LAKI" in line.upper():
+                ktp_data["jenis_kelamin"] = "LAKI-LAKI"
+                print(f"[PARSE] Found Jenis Kelamin (same line): {ktp_data['jenis_kelamin']}")
+                break
+            elif "PEREMPUAN" in line.upper():
+                ktp_data["jenis_kelamin"] = "PEREMPUAN"
+                print(f"[PARSE] Found Jenis Kelamin (same line): {ktp_data['jenis_kelamin']}")
+                break
+            # Check next line for gender (with colon prefix)
+            elif i + 1 < len(text_lines):
+                next_line = text_lines[i + 1]
+                gender_text = next_line.lstrip(':').strip().upper()
+                print(f"[PARSE] Checking gender in next line: '{gender_text}'")
+                if "LAKI" in gender_text:
+                    ktp_data["jenis_kelamin"] = "LAKI-LAKI"
+                    print(f"[PARSE] Found Jenis Kelamin (next line): {ktp_data['jenis_kelamin']}")
+                    break
+                elif "PEREMPUAN" in gender_text:
+                    ktp_data["jenis_kelamin"] = "PEREMPUAN"
+                    print(f"[PARSE] Found Jenis Kelamin (next line): {ktp_data['jenis_kelamin']}")
+                    break
+
+    # Extract Alamat
+    alamat_start = False
+    alamat_lines = []
+    main_address_line = ""
+    for i, line in enumerate(text_lines):
+        if "ALAMAT" in line.upper():
+            alamat_start = True
+            # Check if address is on the same line
+            alamat_match = re.search(r'ALAMAT\s*:\s*(.+)', line, re.IGNORECASE)
+            if alamat_match:
+                main_address_line = alamat_match.group(1).strip()
+            # Check next line for address (with colon prefix)
+            elif i + 1 < len(text_lines):
+                next_line = text_lines[i + 1]
+                if next_line.startswith(':'):
+                    main_address_line = next_line[1:].strip()  # Remove colon prefix
+            continue
+        elif alamat_start and any(keyword in line.upper() for keyword in ["AGAMA", "STATUS", "PEKERJAAN", "KEWARGANEGARAAN", "BERLAKU"]):
+            break
+        elif alamat_start:
+            alamat_lines.append(line.strip())
+
+    if alamat_lines or main_address_line:
+        combined_alamat = (main_address_line + " " + " ".join(alamat_lines)).strip()
+        print(f"[PARSE] Found Alamat combined: {combined_alamat}")
+
+        # Extract RT/RW
+        rt_rw_match = re.search(r'RT/RW\s*[:\-]?\s*(\d{1,3})/(\d{1,3})', combined_alamat, re.IGNORECASE)
+        if rt_rw_match:
+            ktp_data["alamat"]["rt_rw"] = f"{rt_rw_match.group(1).zfill(3)}/{rt_rw_match.group(2).zfill(3)}"
+            print(f"[PARSE] Found RT/RW: {ktp_data['alamat']['rt_rw']}")
+
+        # Extract Kel/Desa
+        kel_desa_match = re.search(r'KEL/DESA\s*[:\-]?\s*(.+?)(?:\s*KECAMATAN|\s*Agama|\s*Status|\s*Pekerjaan|\s*$)', combined_alamat, re.IGNORECASE)
+        if kel_desa_match:
+            kel_desa = kel_desa_match.group(1).strip()
+            ktp_data["alamat"]["kel_desa"] = kel_desa.title()
+            print(f"[PARSE] Found Kel/Desa: {ktp_data['alamat']['kel_desa']}")
+
+        # Extract Kecamatan
+        kecamatan_match = re.search(r'KECAMATAN\s*[:\-]?\s*(.+)', combined_alamat, re.IGNORECASE)
+        if kecamatan_match:
+            kecamatan = kecamatan_match.group(1).strip()
+            ktp_data["alamat"]["kecamatan"] = kecamatan.title()
+            print(f"[PARSE] Found Kecamatan: {ktp_data['alamat']['kecamatan']}")
+
+        # Set the main address
+        ktp_data["alamat"]["name"] = main_address_line
+        print(f"[PARSE] Main address: '{ktp_data['alamat']['name']}'")
+
+    # Extract Agama
+    for i, line in enumerate(text_lines):
+        if "AGAMA" in line.upper():
+            religions = ["ISLAM", "KRISTEN", "KATOLIK", "HINDU", "BUDHA", "KONGHUCU"]
+            # Check current line for religion
+            for religion in religions:
+                if religion in line.upper():
+                    ktp_data["agama"] = religion.title()
+                    print(f"[PARSE] Found Agama (same line): {ktp_data['agama']}")
+                    break
+            else:
+                # Check next line for religion (with colon prefix)
+                if i + 1 < len(text_lines):
+                    next_line = text_lines[i + 1]
+                    religion_text = next_line.lstrip(':').strip().upper()
+                    for religion in religions:
+                        if religion in religion_text:
+                            ktp_data["agama"] = religion.title()
+                            print(f"[PARSE] Found Agama (next line): {ktp_data['agama']}")
+                            break
+            break
+
+    # Extract Status Perkawinan
+    for line in text_lines:
+        if "STATUS" in line.upper() and "PERKAWINAN" in line.upper():
+            # Handle combined format like "StatusPerkawinan:KAWIN"
+            status_match = re.search(r'STATUSPERKAWINAN\s*:\s*(.+)', line, re.IGNORECASE)
+            if status_match:
+                status_text = status_match.group(1).strip().upper()
+                if "KAWIN" in status_text or "MENIKAH" in status_text:
+                    ktp_data["status_perkawinan"] = "Kawin"
+                elif "BELUM" in status_text:
+                    ktp_data["status_perkawinan"] = "Belum Kawin"
+                elif "CERAI" in status_text:
+                    ktp_data["status_perkawinan"] = "Cerai"
+                print(f"[PARSE] Found Status Perkawinan (combined): {ktp_data['status_perkawinan']}")
+                break
+            # Handle separate format
+            elif "KAWIN" in line.upper() or "MENIKAH" in line.upper():
+                ktp_data["status_perkawinan"] = "Kawin"
+            elif "BELUM" in line.upper():
+                ktp_data["status_perkawinan"] = "Belum Kawin"
+            elif "CERAI" in line.upper():
+                ktp_data["status_perkawinan"] = "Cerai"
+            print(f"[PARSE] Found Status Perkawinan: {ktp_data['status_perkawinan']}")
+            break
+
+    # Extract Pekerjaan
+    for i, line in enumerate(text_lines):
+        if "PEKERJAAN" in line.upper():
+            job_match = re.search(r'PEKERJAAN\s*[:\-]?\s*([A-Z\s]+)', line, re.IGNORECASE)
+            if job_match:
+                ktp_data["pekerjaan"] = job_match.group(1).strip().title()
+                print(f"[PARSE] Found Pekerjaan (same line): {ktp_data['pekerjaan']}")
+                break
+            # Check next line for job (with colon prefix)
+            elif i + 1 < len(text_lines):
+                next_line = text_lines[i + 1]
+                job_text = next_line.lstrip(':').strip()
+                if job_text:
+                    ktp_data["pekerjaan"] = job_text.title()
+                    print(f"[PARSE] Found Pekerjaan (next line): {ktp_data['pekerjaan']}")
+                    break
+
+    # Extract Kewarganegaraan
+    for line in text_lines:
+        if "KEWARGANEGARAAN" in line.upper():
+            # Handle combined format like "Kewarganegaraan:WNI"
+            kewarganegaraan_match = re.search(r'KEWARGANEGARAAN\s*:\s*(.+)', line, re.IGNORECASE)
+            if kewarganegaraan_match:
+                nationality = kewarganegaraan_match.group(1).strip().upper()
+                if "WNI" in nationality:
+                    ktp_data["kewarganegaraan"] = "Wni"
+                elif "WNA" in nationality:
+                    ktp_data["kewarganegaraan"] = "Wna"
+                print(f"[PARSE] Found Kewarganegaraan (combined): {ktp_data['kewarganegaraan']}")
+                break
+            # Handle separate format
+            elif "WNI" in line.upper():
+                ktp_data["kewarganegaraan"] = "Wni"
+            elif "WNA" in line.upper():
+                ktp_data["kewarganegaraan"] = "Wna"
+            print(f"[PARSE] Found Kewarganegaraan: {ktp_data['kewarganegaraan']}")
+            break
+
+    # Extract Berlaku Hingga
+    for i, line in enumerate(text_lines):
+        if "BERLAKU" in line.upper() and "HINGGA" in line.upper():
+            if "SEUMUR" in line.upper() and "HIDUP" in line.upper():
+                ktp_data["berlaku_hingga"] = "Seumur Hidup"
+                print(f"[PARSE] Found Berlaku Hingga (same line): {ktp_data['berlaku_hingga']}")
+                break
+            else:
+                # Try to extract date from current line
+                date_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{4})', line)
+                if date_match:
+                    ktp_data["berlaku_hingga"] = date_match.group(1).replace('/', '-')
+                    print(f"[PARSE] Found Berlaku Hingga date (same line): {ktp_data['berlaku_hingga']}")
+                    break
+                # Check next line for date (with colon prefix)
+                elif i + 1 < len(text_lines):
+                    next_line = text_lines[i + 1]
+                    date_text = next_line.lstrip(':').strip()
+                    date_match = re.search(r'(\d{1,2}[-/]\d{1,2}[-/]\d{4})', date_text)
+                    if date_match:
+                        ktp_data["berlaku_hingga"] = date_match.group(1).replace('/', '-')
+                        print(f"[PARSE] Found Berlaku Hingga date (next line): {ktp_data['berlaku_hingga']}")
+                        break
+
+    print(f"[PARSE] Final parsed data: {ktp_data}")
+    return ktp_data
 
 
 @app.post("/v1/cancel/{session_id}", tags=["chat"], response_model=CancelResponse, summary="Cancel a streaming session")
@@ -1442,5 +1894,51 @@ def cancel_session(session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import socket
+    import time
+
+    # Check if port is already in use and kill existing process
+    def is_port_in_use(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('127.0.0.1', port)) == 0
+
+    def kill_existing_processes():
+        try:
+            import subprocess
+            import sys
+            if sys.platform == "win32":
+                # Windows: use taskkill
+                subprocess.run(["taskkill", "/F", "/IM", "python.exe"], check=False, capture_output=True)
+                subprocess.run(["taskkill", "/F", "/IM", "uvicorn.exe"], check=False, capture_output=True)
+            else:
+                # Unix-like systems
+                subprocess.run(["pkill", "-f", "uvicorn"], check=False, capture_output=True)
+                subprocess.run(["pkill", "-f", "python.*main.py"], check=False, capture_output=True)
+            return True
+        except Exception as e:
+            print(f"[startup] Failed to kill existing process: {e}")
+            return False
+
+    # Try to free the port
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        if is_port_in_use(PORT):
+            print(f"[startup] Port {PORT} is already in use (attempt {attempt + 1}/{max_attempts}). Attempting to kill existing process...")
+            if kill_existing_processes():
+                print(f"[startup] Killed existing processes on port {PORT}")
+                time.sleep(2)  # Wait for port to be freed
+                if not is_port_in_use(PORT):
+                    print(f"[startup] Port {PORT} is now free")
+                    break
+            else:
+                print(f"[startup] Failed to kill processes, waiting...")
+                time.sleep(3)
+        else:
+            print(f"[startup] Port {PORT} is free")
+            break
+    else:
+        print(f"[startup] Could not free port {PORT} after {max_attempts} attempts")
+        print("[startup] Please manually kill any processes using this port")
+        exit(1)
 
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)

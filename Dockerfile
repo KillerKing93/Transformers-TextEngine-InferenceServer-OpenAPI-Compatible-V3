@@ -60,7 +60,7 @@ ENV HF_HOME=/app/hf-cache
 ENV TRANSFORMERS_CACHE=/app/hf-cache
 RUN mkdir -p /app/hf-cache && \
     if [ "$BAKE_MODEL" = "1" ]; then \
-      python -c "import os; from huggingface_hub import snapshot_download; repo_id='Qwen/Qwen3-VL-2B-Thinking'; token=os.getenv('HF_TOKEN'); print(f'Downloading {repo_id}...'); snapshot_download(repo_id, token=token, local_dir='/app/hf-cache/Qwen_Qwen3-VL-2B-Thinking', local_dir_use_symlinks=False); print('Model downloaded.');"; \
+      python -c "import os; from huggingface_hub import snapshot_download; repo_id='unsloth/Qwen3-4B-Instruct-2507'; token=os.getenv('HF_TOKEN'); print(f'Downloading {repo_id}...'); snapshot_download(repo_id, token=token, local_dir='/app/hf-cache/unsloth_Qwen3-4B-Instruct-2507', local_dir_use_symlinks=False); print('Model downloaded.');"; \
     else \
       echo 'Skipping model bake-in (BAKE_MODEL=0). The server will prefetch to /app/hf-cache at startup.'; \
     fi

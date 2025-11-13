@@ -79,7 +79,7 @@ See [.gitignore](.gitignore) and extend as needed for new generated outputs. If 
 ## 4) Model policy (Hugging Face / Transformers)
 
 Target default model:
-- Qwen/Qwen3-VL-2B-Thinking (Transformers; multimodal).
+- unsloth/Qwen3-4B-Instruct-2507 (Transformers; instruct model).
 
 Rules:
 - Use Hugging Face Transformers (AutoModelForCausalLM + AutoProcessor) with trust_remote_code=True.
@@ -163,7 +163,7 @@ Recommended:
 
 Environment variables (see [.env.example](.env.example)):
 - PORT=3000
-- MODEL_REPO_ID=Qwen/Qwen3-VL-2B-Thinking
+- MODEL_REPO_ID=unsloth/Qwen3-4B-Instruct-2507
 - HF_TOKEN=
 - MAX_TOKENS=256
 - TEMPERATURE=0.7

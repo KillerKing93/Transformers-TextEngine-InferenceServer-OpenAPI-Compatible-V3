@@ -1,61 +1,63 @@
 # Architecture (Python FastAPI + Transformers)
 
-This document describes the Python-based, OpenAI-compatible inference server for Qwen3-VL, replacing the previous Node.js/llama.cpp stack.
+This document describes the Python-based, OpenAI-compatible inference server for Qwen3-4B-Instruct, designed to power an **AI-powered marketplace intelligence system**.
+
+## System Purpose
+
+This inference server serves as the AI backend for a smart marketplace platform where:
+- Suppliers can register and list products
+- Users query product availability and get AI recommendations
+- Products are matched based on user location to find nearest suppliers
+- AI assistant helps with natural language product discovery
 
 Key source files
 - Server entry: [main.py](main.py)
-- Inference engine: [Python.class Engine](main.py:231)
-- Multimodal parsing: [Python.function build_mm_messages](main.py:251), [Python.function load_image_from_any](main.py:108), [Python.function load_video_frames_from_any](main.py:150)
-- Endpoints: Health [Python.app.get()](main.py:577), Chat Completions [Python.app.post()](main.py:591), Cancel [Python.app.post()](main.py:792), KTP OCR [Python.app.post()](main.py:1310)
+- Inference engine: [Python.class Engine](main.py:464)
+- Endpoints: Health [Python.app.get()](main.py:577), Chat Completions [Python.app.post()](main.py:591), Cancel [Python.app.post()](main.py:792)
 - Streaming + resume: [Python.class _SSESession](main.py:435), [Python.class _SessionStore](main.py:449), [Python.class _SQLiteStore](main.py:482), [Python.function chat_completions](main.py:591)
 - Local run (uvicorn): [Python.main()](main.py:807)
 - Configuration template: [.env.example](.env.example)
 - Dependencies: [requirements.txt](requirements.txt)
 
 Model target (default)
-- Hugging Face: Qwen/Qwen3-VL-2B-Thinking (Transformers, multimodal)
+- Hugging Face: unsloth/Qwen3-4B-Instruct-2507 (Transformers, text-only instruct model)
 - Overridable via environment variable: MODEL_REPO_ID
+
+**Deprecated features**: Multimodal parsing (images/videos) and KTP OCR endpoint are deprecated as of migration to text-only model. Code remains for reference but is non-functional.
 
 ## Overview
 
-The server exposes an OpenAI-compatible endpoint for chat completions that supports:
-- Text-only prompts
-- Images (URL or base64)
-- Videos (URL or base64; frames sampled)
-
-Two response modes are implemented:
-- Non-streaming JSON
-- Streaming via Server-Sent Events (SSE) with resumable delivery using Last-Event-ID. Resumability is achieved with an in‑memory ring buffer and optional SQLite persistence.
+The server exposes an OpenAI-compatible endpoint for chat completions:
+- **Text-only prompts** (primary use case for marketplace AI assistant)
+- Non-streaming JSON responses
+- Streaming via Server-Sent Events (SSE) with resumable delivery using Last-Event-ID
+- Resumability is achieved with an in‑memory ring buffer and optional SQLite persistence
 
 ## Components
 
 1) FastAPI application
 - Instantiated in [Python.main module](main.py:541) and endpoints mounted at:
   - Health: [Python.app.get()](main.py:577)
-  - Chat Completions (non-stream + SSE): [Python.app.post()](main.py:591)
+  - Chat Completions (non-stream + SSE): [Python.app.post()](main.py:591) - **Primary endpoint for marketplace AI**
   - Manual cancel (custom): [Python.app.post()](main.py:792)
-  - KTP OCR: [Python.app.post()](main.py:1310)
+  - ~~KTP OCR: [Python.app.post()](main.py:1310)~~ - **DEPRECATED** (requires multimodal model)
 - CORS is enabled for simplicity.
 
 2) Inference Engine (Transformers)
-- Class: [Python.class Engine](main.py:231)
+- Class: [Python.class Engine](main.py:464)
 - Loads:
   - Processor: AutoProcessor(trust_remote_code=True)
   - Model: AutoModelForCausalLM (device_map, dtype configurable via env)
 - Core methods:
-  - Input building: [Python.function build_mm_messages](main.py:251)
   - Text-only generate: [Python.function infer](main.py:326)
   - Streaming generate (iterator): [Python.function infer_stream](main.py:375)
 
-3) Multimodal preprocessing
-- Images:
-  - URL (http/https), data URL, base64, or local path
-  - Loader: [Python.function load_image_from_any](main.py:108)
-- Videos:
-  - URL (downloaded to temp), base64 to temp file, or local path
-  - Frame extraction via imageio.v3 (preferred) or OpenCV fallback
-  - Uniform sampling up to MAX_VIDEO_FRAMES
-  - Loader: [Python.function load_video_frames_from_any](main.py:150)
+3) ~~Multimodal preprocessing~~ - **DEPRECATED**
+- ~~Images/Videos processing~~ - Code remains but is non-functional with text-only model
+- For marketplace use case, all interactions are text-based:
+  - Product queries: "laptop gaming Jakarta"
+  - Recommendations: "laptop programming 10 juta"
+  - Location queries: supplier location data passed as text in conversation context
 
 4) SSE streaming with resume
 - Session objects:
@@ -76,8 +78,8 @@ Two response modes are implemented:
 
 Non-streaming (POST /v1/chat/completions)
 1. Validate input, load engine singleton via [Python.function get_engine](main.py:558)
-2. Convert OpenAI-style messages to Qwen chat template via [Python.function build_mm_messages](main.py:251) and apply_chat_template
-3. Preprocess images/videos into processor inputs
+2. Convert OpenAI-style messages to Qwen chat template via apply_chat_template
+3. ~~Preprocess images/videos~~ - DEPRECATED (text-only model)
 4. Generate with [Python.function infer](main.py:326)
 5. Return OpenAI-compatible response (choices[0].message.content)
 
@@ -131,7 +133,7 @@ Template:
 
 See [.env.example](.env.example)
 - PORT (default 3000)
-- MODEL_REPO_ID (default "Qwen/Qwen3-VL-2B-Thinking")
+- MODEL_REPO_ID (default "unsloth/Qwen3-4B-Instruct-2507")
 - HF_TOKEN (optional)
 - MAX_TOKENS (default 256)
 - TEMPERATURE (default 0.7)
@@ -184,6 +186,59 @@ Ignored artifacts (see [.gitignore](.gitignore))
   - Final chunk contains finish_reason: "stop"
   - "[DONE]" sentinel is emitted afterwards
 
+## Marketplace Integration Plan
+
+This inference server is designed to power an AI-powered marketplace platform. The following components need to be developed:
+
+### 1. Database Schema (Planned)
+- **Suppliers table**: id, name, business_name, location (lat/lng), address, contact, registration_date
+- **Products table**: id, supplier_id, name, description, price, stock_quantity, category, tags
+- **Users table**: id, name, email, location (lat/lng), ai_access_enabled, preferences
+- **Conversations table**: id, user_id, session_id, created_at (for chat history)
+- **Messages table**: id, conversation_id, role (user/assistant), content, timestamp
+
+### 2. Marketplace API Endpoints (Planned)
+- **Supplier Management**:
+  - POST /api/suppliers/register - Register new supplier
+  - POST /api/products - Add product listing
+  - PUT /api/products/{id} - Update product (stock, price)
+  - GET /api/suppliers/{id}/products - List supplier products
+
+- **Product Search**:
+  - GET /api/products/search?q={query}&location={lat,lng} - Traditional search
+  - POST /api/products/ai-search - AI-powered search with natural language
+
+- **AI Assistant Integration**:
+  - POST /api/chat - Wrapper around /v1/chat/completions with context injection
+  - Context injection: Pass product database results as system message
+  - Location awareness: Calculate distance, sort by proximity
+  - Example flow:
+    1. User: "laptop gaming Jakarta budget 10 juta"
+    2. Backend queries products table for: category="laptop", tags LIKE "%gaming%", location near Jakarta, price <= 10000000
+    3. Inject results into system prompt: "Available products: [JSON array of matching products]"
+    4. Send to /v1/chat/completions
+    5. AI recommends from available inventory with reasons
+
+### 3. Location-Aware Features (Planned)
+- Geolocation distance calculation (Haversine formula)
+- Sort products/suppliers by distance from user
+- Multi-supplier comparison showing nearest options
+- Delivery time estimates based on distance
+
+### 4. Context Management Strategy
+- Maintain conversation history per user session
+- Inject product catalog context dynamically based on query
+- Use session_id for resumable conversations
+- Store conversation in database for analytics and personalization
+
+### Current Status
+- ✅ Inference server ready (/v1/chat/completions endpoint)
+- ✅ Streaming and resume functionality
+- ⏳ Database schema design
+- ⏳ Marketplace API development
+- ⏳ Frontend/UI development
+- ⏳ Product catalog seeding and testing
+
 ## Future enhancements
 
 - Redis persistence:
@@ -193,8 +248,15 @@ Ignored artifacts (see [.gitignore](.gitignore))
 - Logging/observability:
   - Structured logs, request IDs, and metrics
 
-## Migration notes (from Node.js)
+## Migration notes
 
+### From Node.js to Python (2025-10-23)
 - All Node.js server files and scripts were removed (index.js, package*.json, scripts/)
-- The server now targets Transformers models directly and supports multimodal inputs out of the box
+- Migrated to Python FastAPI + Transformers stack
 - The API remains OpenAI-compatible on /v1/chat/completions with resumable SSE and optional SQLite persistence
+
+### From Multimodal to Text-Only (2025-11-13)
+- Migrated from Qwen/Qwen3-VL-2B-Thinking (multimodal) to unsloth/Qwen3-4B-Instruct-2507 (text-only)
+- **Deprecated features**: KTP OCR endpoint, image/video processing
+- **New focus**: AI-powered marketplace intelligence system
+- Multimodal code remains in codebase but is non-functional with current model

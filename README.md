@@ -8,9 +8,17 @@ app_port: 3000
 pinned: false
 ---
 
-# Python FastAPI Inference Server (OpenAI-Compatible) for Qwen3-VL-2B-Thinking
+# Python FastAPI Inference Server (OpenAI-Compatible) for Qwen3-4B-Instruct
 
-This repository has been migrated from a Node.js/llama.cpp stack to a Python/Transformers stack to fully support multimodal inference (text, images, videos) with the Hugging Face Qwen3 models.
+## AI-Powered Marketplace Intelligence System
+
+This repository provides an OpenAI-compatible inference server powered by Qwen3-4B-Instruct, designed to serve as the AI backend for a **smart marketplace platform** where:
+
+- **Suppliers** can register and list their products
+- **Users** can query product availability, get AI-powered recommendations, and find the nearest suppliers
+- **AI Assistant** helps users discover products based on their needs, location, and preferences
+
+The system has been migrated from a Node.js/llama.cpp stack to a Python/Transformers stack for better model compatibility and performance.
 
 Key files:
 
@@ -21,30 +29,45 @@ Key files:
 
 Model:
 
-- Default: Qwen/Qwen3-VL-2B-Thinking (Transformers; supports multimodal)
+- Default: unsloth/Qwen3-4B-Instruct-2507 (Transformers; text-only instruct model)
 - You can change the model via environment variable MODEL_REPO_ID.
 
-Node.js artifacts and scripts from the previous project have been removed.
+## Marketplace Features (Planned)
 
-## KTP OCR Endpoint
+This inference server will power the following marketplace capabilities:
 
-This server includes a KTP (Indonesian ID Card) OCR endpoint that extracts structured data from KTP images using the multimodal model.
+### 1. Supplier Management
+- Suppliers can register their business
+- List products with details (name, price, stock, location)
+- Update inventory in real-time
 
-- Endpoint: `POST /ktp-ocr/`
-- Input: Multipart form-data with `image` field (JPEG/PNG)
-- Output: JSON with fields like `nik`, `nama`, `tempat_lahir`, `tgl_lahir`, `jenis_kelamin`, `alamat`, `agama`, `status_perkawinan`, `pekerjaan`, `kewarganegaraan`, `berlaku_hingga`
+### 2. AI-Powered Product Discovery
+Users with AI access can:
+- **Query Stock Availability**: "Apakah ada stok laptop gaming di Jakarta?"
+- **Get Recommendations**: "Saya butuh laptop untuk programming, budget 10 juta, yang bagus apa?"
+- **Find Nearest Suppliers**: Products are matched based on user's location to show the closest available suppliers
+- **Compare Products**: AI helps compare features, prices, and reviews
 
-Example usage:
-```bash
-curl -X POST http://localhost:3000/ktp-ocr/ \
-  -F "image=@image.jpg"
-```
+### 3. Location-Aware Intelligence
+- Automatic supplier-to-user distance calculation
+- Prioritize recommendations based on proximity
+- Suggest delivery or pickup options based on distance
 
-This feature is inspired by [raflyryhnsyh/Gemini-OCR-KTP](https://github.com/raflyryhnsyh/Gemini-OCR-KTP), adapted to use our local Qwen3-VL model instead of Gemini AI.
+### 4. Natural Language Interaction
+- Users can ask in natural Indonesian or English
+- AI understands context and user preferences over conversation
+- Personalized recommendations based on chat history
+
+### Current Status
+The inference server (OpenAI-compatible `/v1/chat/completions` endpoint) is **ready**. Marketplace database, API endpoints, and frontend are **in development**.
+
+## Deprecated Features
+
+**Note**: Previous multimodal features (KTP OCR, image/video processing) are **deprecated** as of the migration to Qwen3-4B-Instruct (text-only model). The `/ktp-ocr/` endpoint code remains but is non-functional with the current model.
 
 ## Hugging Face Space
 
-The project is hosted on Hugging Face Spaces for easy access: [KillerKing93/Transformers-InferenceServer-OpenAPI](https://huggingface.co/spaces/KillerKing93/Transformers-InferenceServer-OpenAPI)
+The project is hosted on Hugging Face Spaces for easy access: [KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3](https://huggingface.co/spaces/KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3)
 
 You can use the Space's API endpoints directly or access the web UI.
 
@@ -141,7 +164,7 @@ Configuration via .env
 See [.env.example](.env.example). Important variables:
 
 - PORT=3000
-- MODEL_REPO_ID=Qwen/Qwen3-VL-2B-Thinking
+- MODEL_REPO_ID=unsloth/Qwen3-4B-Instruct-2507
 - HF_TOKEN= # optional if gated
 - MAX_TOKENS=4096
 - TEMPERATURE=0.7
@@ -184,7 +207,7 @@ Endpoints (OpenAI-compatible)
   {
   "ok": true,
   "modelReady": true,
-  "modelId": "Qwen/Qwen3-VL-2B-Thinking",
+  "modelId": "unsloth/Qwen3-4B-Instruct-2507",
   "error": null
   }
 
@@ -355,7 +378,7 @@ Notes and limits
 
 ## Hugging Face repository files support
 
-This server loads the Qwen3-VL model via Transformers with `trust_remote_code=True`, so the standard files from the repo are supported and consumed automatically. Summary for https://huggingface.co/Qwen/Qwen3-VL-2B-Thinking/tree/main:
+This server loads the Qwen3 model via Transformers with `trust_remote_code=True`, so the standard files from the repo are supported and consumed automatically. Summary for https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507/tree/main:
 
 - Used by model weights and architecture
 
