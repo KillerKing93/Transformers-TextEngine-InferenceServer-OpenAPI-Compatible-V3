@@ -25,9 +25,22 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+.claude/
 
 # Data / models (large artifacts)
 models/
 data/
 uploads/
 tmp/
+
+# Temporary debug/test files
+debug_parser.py
+test_parser.py
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+marketplace.db
+sessions.db
