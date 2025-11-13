@@ -1177,7 +1177,7 @@ def health():
 @app.options("/v1/chat/completions", tags=["chat"])
 async def chat_completions_options():
     """Handle OPTIONS preflight for chat completions endpoint"""
-    return {"message": "OK"}
+    return Response(status_code=200)
 
 async def chat_completions(
     request: Request,
@@ -2729,7 +2729,7 @@ def debug_test_generation(message: str = "Hello, how are you?"):
 @app.options("/debug/test-stream", tags=["debug"])
 async def debug_test_stream_options():
     """Handle OPTIONS preflight for streaming endpoint"""
-    return {"message": "OK"}
+    return Response(status_code=200)
 
 @app.post("/debug/test-stream", tags=["debug"])
 def debug_test_stream():
