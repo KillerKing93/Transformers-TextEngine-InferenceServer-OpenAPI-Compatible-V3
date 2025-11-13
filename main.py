@@ -819,16 +819,25 @@ class Engine:
     ):
         from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
 
+        print(f"[STREAM] Starting infer_stream with max_tokens={max_tokens}, temperature={temperature}")
+        print(f"[STREAM] Input messages: {messages}")
+
         mm_messages, images, videos = self.build_mm_messages(messages)
+        print(f"[STREAM] Built mm_messages: {mm_messages}")
+        print(f"[STREAM] Images count: {len(images) if images else 0}, Videos count: {len(videos) if videos else 0}")
+
         # Auto-compress if needed based on context budget
         mm_messages, ctx_info = self._auto_compress_if_needed(mm_messages, max_tokens)
         self.last_context_info = ctx_info
+        print(f"[STREAM] After compression: {mm_messages}")
 
         text = self.processor.apply_chat_template(
             mm_messages,
             tokenize=False,
             add_generation_prompt=True,
         )
+        print(f"[STREAM] Applied chat template, text length: {len(text)}")
+        print(f"[STREAM] Template preview: {text[:200]}...")
 
         proc_kwargs: Dict[str, Any] = {"text": [text], "return_tensors": "pt"}
         if images:
@@ -837,22 +846,34 @@ class Engine:
             proc_kwargs["videos"] = videos
 
         inputs = self.processor(**proc_kwargs)
+        print(f"[STREAM] Processor inputs keys: {list(inputs.keys())}")
+        for k, v in inputs.items():
+            if hasattr(v, 'shape'):
+                print(f"[STREAM] {k}: shape={v.shape}, dtype={v.dtype}")
+            else:
+                print(f"[STREAM] {k}: {type(v)}")
+
         try:
             if str(getattr(self, "_resolved_device_map", "")).lower() == "cpu":
                 inputs = {k: (v.to("cpu") if hasattr(v, "to") else v) for k, v in inputs.items()}
+                print("[STREAM] Using CPU device")
             else:
                 device = getattr(self.model, "device", None) or next(self.model.parameters()).device
                 inputs = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
-        except Exception:
+                print(f"[STREAM] Using device: {device}")
+        except Exception as e:
+            print(f"[STREAM] Device setup error: {e}")
             pass
 
         do_sample = temperature is not None and float(temperature) > 0.0
+        print(f"[STREAM] do_sample={do_sample}")
 
         streamer = TextIteratorStreamer(
             getattr(self.processor, "tokenizer", None),
             skip_prompt=True,
             skip_special_tokens=True,
         )
+        print("[STREAM] Created TextIteratorStreamer")
 
         gen_kwargs = dict(
             **inputs,
@@ -862,6 +883,7 @@ class Engine:
             use_cache=True,
             streamer=streamer,
         )
+        print(f"[STREAM] Generation kwargs prepared: {list(gen_kwargs.keys())}")
 
         # Optional cooperative cancellation via StoppingCriteria
         if cancel_event is not None:
@@ -873,23 +895,43 @@ class Engine:
                     return bool(self.ev.is_set())
 
             gen_kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCrit(cancel_event)])
+            print("[STREAM] Added cancellation criteria")
 
         # Wrap generation with torch.no_grad() to avoid autograd overhead on CPU and reduce failure surface
         def _runner():
             try:
                 import torch
+                print("[STREAM] Generation thread started")
                 with torch.no_grad():
+                    print("[STREAM] Starting model.generate()")
                     self.model.generate(**gen_kwargs)
-            except Exception:
+                    print("[STREAM] model.generate() completed")
+            except Exception as e:
+                print(f"[STREAM] Generation error: {e}")
+                import traceback
+                traceback.print_exc()
                 # Let streamer finish gracefully even if generation throws
                 pass
 
         th = threading.Thread(target=_runner)
         th.start()
+        print("[STREAM] Generation thread started")
 
+        piece_count = 0
+        print("[STREAM] Starting to iterate through streamer...")
         for piece in streamer:
+            piece_count += 1
+            print(f"[STREAM] Generated piece #{piece_count}: '{piece}'")
             if piece:
+                print(f"[STREAM] Yielding piece: '{piece[:50]}...'")
                 yield piece
+            else:
+                print(f"[STREAM] Empty piece received, skipping")
+
+        print(f"[STREAM] Stream ended. Total pieces: {piece_count}")
+        th.join(timeout=5.0)
+        if th.is_alive():
+            print("[STREAM] Warning: Generation thread still alive after timeout")
 
 
 # Simple in-memory resumable SSE session store + optional SQLite persistence
