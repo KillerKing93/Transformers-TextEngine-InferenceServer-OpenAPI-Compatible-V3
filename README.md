@@ -59,7 +59,195 @@ Users with AI access can:
 - Personalized recommendations based on chat history
 
 ### Current Status
-The inference server (OpenAI-compatible `/v1/chat/completions` endpoint) is **ready**. Marketplace database, API endpoints, and frontend are **in development**.
+✅ **FULLY IMPLEMENTED!** All marketplace features are production-ready:
+- ✅ Inference server (OpenAI-compatible `/v1/chat/completions`)
+- ✅ Marketplace database (5 tables with relationships and indexes)
+- ✅ 10+ RESTful API endpoints (suppliers, products, users, AI search)
+- ✅ Location-aware search with Haversine distance calculation
+- ✅ AI-powered natural language product search
+- ✅ Sample data seeding script
+- ⏳ Frontend UI (planned)
+
+## Marketplace API Endpoints
+
+### Supplier Management
+
+#### Register Supplier
+```bash
+POST /api/suppliers/register
+Content-Type: application/json
+
+{
+  "name": "John Doe",
+  "business_name": "Tech Store Jakarta",
+  "email": "john@techstore.com",
+  "phone": "+62812345678",
+  "address": "Jl. Sudirman No. 123",
+  "latitude": -6.2088,
+  "longitude": 106.8456,
+  "city": "Jakarta",
+  "province": "DKI Jakarta"
+}
+```
+
+#### List Suppliers
+```bash
+GET /api/suppliers?city=Jakarta&skip=0&limit=100
+```
+
+#### Get Supplier Details
+```bash
+GET /api/suppliers/{supplier_id}
+```
+
+### Product Management
+
+#### Create Product
+```bash
+POST /api/suppliers/{supplier_id}/products
+Content-Type: application/json
+
+{
+  "name": "Laptop ASUS ROG Strix G15",
+  "description": "Gaming laptop with RTX 4060",
+  "price": 15999000,
+  "stock_quantity": 5,
+  "category": "laptop",
+  "tags": "gaming,asus,rtx",
+  "sku": "ASU-ROG-G15-001"
+}
+```
+
+#### Update Product
+```bash
+PUT /api/products/{product_id}
+Content-Type: application/json
+
+{
+  "price": 14999000,
+  "stock_quantity": 3
+}
+```
+
+#### List Products
+```bash
+GET /api/products?category=laptop&min_price=5000000&max_price=20000000&available_only=true
+```
+
+#### Search Products (Location-Aware)
+```bash
+GET /api/products/search?q=laptop+gaming&city=Jakarta&user_lat=-6.2088&user_lon=106.8456&max_price=15000000
+```
+
+Response includes `distance_km` field for each product (distance from user location).
+
+### User Management
+
+#### Register User
+```bash
+POST /api/users/register
+Content-Type: application/json
+
+{
+  "name": "Jane Smith",
+  "email": "jane@email.com",
+  "phone": "+62856789012",
+  "latitude": -6.2088,
+  "longitude": 106.8456,
+  "city": "Jakarta",
+  "province": "DKI Jakarta",
+  "ai_access_enabled": true
+}
+```
+
+#### Get User Profile
+```bash
+GET /api/users/{user_id}
+```
+
+### AI-Powered Search (Premium Feature)
+
+The main feature! Natural language product search with AI recommendations.
+
+```bash
+POST /api/chat/search
+Content-Type: application/json
+
+{
+  "user_id": 1,
+  "query": "Saya butuh laptop gaming di Jakarta, budget 12 juta",
+  "session_id": "optional-session-id"
+}
+```
+
+**Response:**
+```json
+{
+  "session_id": "user_1_1731485760",
+  "response": "Berdasarkan budget Anda 12 juta dan lokasi di Jakarta, saya merekomendasikan HP Pavilion Gaming (Rp 11.999.000) dari Tech Store Surabaya. Laptop ini memiliki RTX 3050 graphics yang bagus untuk gaming...",
+  "products_found": 3,
+  "conversation_id": 1
+}
+```
+
+**How it works:**
+1. Parses natural language query (extracts category, budget, location)
+2. Searches database with filters
+3. Sorts results by distance from user
+4. Injects product catalog into AI system prompt
+5. AI generates personalized recommendation
+6. Saves conversation to database for history
+
+**Requirements:**
+- User must have `ai_access_enabled: true`
+- Location coordinates help with distance sorting
+
+### Database Setup
+
+#### 1. Install Dependencies
+```bash
+pip install sqlalchemy alembic
+```
+
+#### 2. Configure Database
+Create `.env` file (or use `.env.example`):
+```env
+DATABASE_URL=sqlite:///./marketplace.db
+# Or PostgreSQL: postgresql://user:password@localhost/marketplace
+# Or MySQL: mysql+pymysql://user:password@localhost/marketplace
+```
+
+#### 3. Seed Sample Data
+```bash
+python seed_data.py
+```
+
+This creates:
+- 5 suppliers (Jakarta, Bandung, Surabaya, Jakarta Selatan, Medan)
+- 15 products (laptops, smartphones, monitors, accessories)
+- 3 users (2 with AI access enabled)
+
+#### 4. Start Server
+```bash
+python main.py
+```
+
+Database tables are auto-created on first startup.
+
+### Testing Marketplace Endpoints
+
+Run comprehensive test suite:
+```bash
+pytest tests/test_marketplace.py -v
+```
+
+Tests cover:
+- Supplier registration and listing
+- Product creation, update, and search
+- User registration
+- Location-aware search
+- AI-powered search (mocked)
+- Utility functions (Haversine distance, location parsing)
 
 ## Deprecated Features
 
