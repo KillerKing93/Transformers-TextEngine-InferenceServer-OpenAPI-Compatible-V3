@@ -817,9 +817,8 @@ class Engine:
         temperature: float,
         cancel_event: Optional[threading.Event] = None,
     ):
-        from transformers import TextIteratorStreamer, StoppingCriteria, StoppingCriteriaList
-
-        print(f"[STREAM] Starting infer_stream with max_tokens={max_tokens}, temperature={temperature}")
+        """Manual streaming implementation for Qwen3 - TextIteratorStreamer is unreliable"""
+        print(f"[STREAM] Starting manual infer_stream with max_tokens={max_tokens}, temperature={temperature}")
         print(f"[STREAM] Input messages: {messages}")
 
         mm_messages, images, videos = self.build_mm_messages(messages)
@@ -847,11 +846,6 @@ class Engine:
 
         inputs = self.processor(**proc_kwargs)
         print(f"[STREAM] Processor inputs keys: {list(inputs.keys())}")
-        for k, v in inputs.items():
-            if hasattr(v, 'shape'):
-                print(f"[STREAM] {k}: shape={v.shape}, dtype={v.dtype}")
-            else:
-                print(f"[STREAM] {k}: {type(v)}")
 
         try:
             if str(getattr(self, "_resolved_device_map", "")).lower() == "cpu":
@@ -868,34 +862,32 @@ class Engine:
         do_sample = temperature is not None and float(temperature) > 0.0
         print(f"[STREAM] do_sample={do_sample}")
 
-        # Fix: Explicitly get tokenizer from processor for Qwen3
+        # Manual streaming using token-by-token generation
+        import torch
+        import time
+
+        # Get tokenizer for decoding
         tokenizer = getattr(self.processor, "tokenizer", None)
         if tokenizer is None:
-            print("[STREAM] ERROR: No tokenizer found in processor!")
+            print("[STREAM] ERROR: No tokenizer available for streaming!")
             return
 
         print(f"[STREAM] Tokenizer vocab size: {getattr(tokenizer, 'vocab_size', 'unknown')}")
+        print(f"[STREAM] EOS token ID: {getattr(tokenizer, 'eos_token_id', 'unknown')}")
 
-        streamer = TextIteratorStreamer(
-            tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True,
-            timeout=60.0,  # Add timeout to prevent hanging
-        )
-        print("[STREAM] Created TextIteratorStreamer with timeout")
-
+        # Prepare generation kwargs
         gen_kwargs = dict(
             **inputs,
-            max_new_tokens=int(max_tokens),
+            max_new_tokens=1,  # Generate one token at a time for streaming
             temperature=float(temperature),
             do_sample=do_sample,
             use_cache=True,
-            streamer=streamer,
+            pad_token_id=tokenizer.eos_token_id,  # Prevent padding warnings
         )
-        print(f"[STREAM] Generation kwargs prepared: {list(gen_kwargs.keys())}")
 
-        # Optional cooperative cancellation via StoppingCriteria
+        # Optional cooperative cancellation
         if cancel_event is not None:
+            from transformers import StoppingCriteria, StoppingCriteriaList
             class _CancelCrit(StoppingCriteria):
                 def __init__(self, ev: threading.Event):
                     self.ev = ev
@@ -906,73 +898,89 @@ class Engine:
             gen_kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCrit(cancel_event)])
             print("[STREAM] Added cancellation criteria")
 
-        # Wrap generation with torch.no_grad() to avoid autograd overhead on CPU and reduce failure surface
-        def _runner():
-            try:
-                import torch
-                print("[STREAM] Generation thread started")
-                with torch.no_grad():
-                    print("[STREAM] Starting model.generate()")
-                    result_ids = self.model.generate(**gen_kwargs)
-                    print(f"[STREAM] model.generate() completed. Generated shape: {result_ids.shape if hasattr(result_ids, 'shape') else 'unknown'}")
-            except Exception as e:
-                print(f"[STREAM] Generation error: {e}")
-                import traceback
-                traceback.print_exc()
-                # Let streamer finish gracefully even if generation throws
-                pass
+        # Get initial input_ids for tracking
+        input_ids = inputs.get("input_ids")
+        if input_ids is None:
+            print("[STREAM] ERROR: No input_ids found!")
+            return
 
-        th = threading.Thread(target=_runner, daemon=True)  # Make daemon thread to prevent hanging
-        th.start()
-        print("[STREAM] Generation thread started")
+        prompt_length = input_ids.shape[-1]
+        print(f"[STREAM] Prompt length: {prompt_length} tokens")
 
-        piece_count = 0
-        print("[STREAM] Starting to iterate through streamer...")
-
-        # Stream with timeout protection using time-based check
-        import time
-        start_time = time.time()
-        timeout_seconds = 120  # 2 minute total timeout
-        last_piece_time = start_time
-        piece_timeout = 30  # 30 seconds between pieces
-
+        # Streaming generation
         try:
-            for piece in streamer:
-                current_time = time.time()
+            with torch.no_grad():
+                current_ids = input_ids.clone()
+                generated_text = ""
+                piece_count = 0
+                start_time = time.time()
+                timeout_seconds = 120  # 2 minute total timeout
+                eos_token_id = tokenizer.eos_token_id
 
-                # Check total timeout
-                if current_time - start_time > timeout_seconds:
-                    print(f"[STREAM] Total timeout reached after {piece_count} pieces")
-                    break
+                print(f"[STREAM] Starting manual token-by-token generation...")
+                print(f"[STREAM] Max tokens: {max_tokens}, EOS token: {eos_token_id}")
 
-                # Check piece timeout
-                if current_time - last_piece_time > piece_timeout:
-                    print(f"[STREAM] Piece timeout after {piece_count} pieces")
-                    break
+                for i in range(int(max_tokens)):
+                    # Check timeout
+                    if time.time() - start_time > timeout_seconds:
+                        print(f"[STREAM] Timeout after {piece_count} pieces")
+                        break
 
-                piece_count += 1
-                last_piece_time = current_time
-                print(f"[STREAM] Generated piece #{piece_count}: '{piece}'")
+                    # Check cancellation
+                    if cancel_event and cancel_event.is_set():
+                        print(f"[STREAM] Cancelled after {piece_count} pieces")
+                        break
 
-                if piece:
-                    print(f"[STREAM] Yielding piece: '{piece[:50]}...'")
-                    yield piece
-                else:
-                    print(f"[STREAM] Empty piece received, skipping")
+                    # Generate next token
+                    print(f"[STREAM] Generating token {i+1}/{max_tokens}")
 
-            print(f"[STREAM] Stream ended. Total pieces: {piece_count}")
+                    outputs = self.model.generate(
+                        **current_ids,
+                        **{k: v for k, v in gen_kwargs.items() if k != 'input_ids'},  # Don't pass input_ids twice
+                        return_dict_in_generate=True,
+                        output_scores=False,  # Save memory
+                    )
+
+                    # Get the new token (last one in the sequence)
+                    new_token_id = outputs.sequences[0][-1:]
+                    current_ids = torch.cat([current_ids, new_token_id.unsqueeze(0)], dim=-1)
+
+                    # Check for EOS
+                    if new_token_id.item() == eos_token_id:
+                        print(f"[STREAM] EOS token received at position {i+1}")
+                        break
+
+                    # Decode the new token
+                    try:
+                        new_token_text = tokenizer.decode(new_token_id, skip_special_tokens=True)
+                        if new_token_text.strip():  # Only yield non-whitespace content
+                            generated_text += new_token_text
+                            piece_count += 1
+                            print(f"[STREAM] Piece #{piece_count}: '{new_token_text}' (total: '{generated_text[-50:]}')")
+                            yield new_token_text
+                        else:
+                            print(f"[STREAM] Skipped whitespace: '{new_token_text}'")
+                    except Exception as decode_error:
+                        print(f"[STREAM] Decode error for token {new_token_id}: {decode_error}")
+                        # Try decoding as just the character
+                        try:
+                            new_token_text = tokenizer.decode([new_token_id.item()], skip_special_tokens=True)
+                            if new_token_text.strip():
+                                generated_text += new_token_text
+                                piece_count += 1
+                                print(f"[STREAM] Recovered piece #{piece_count}: '{new_token_text}'")
+                                yield new_token_text
+                        except:
+                            print(f"[STREAM] Could not decode token {new_token_id}, skipping")
+
+                print(f"[STREAM] Manual streaming completed")
+                print(f"[STREAM] Total pieces: {piece_count}")
+                print(f"[STREAM] Final text: '{generated_text}'")
 
         except Exception as e:
-            print(f"[STREAM] Streaming error: {e}")
+            print(f"[STREAM] Manual streaming error: {e}")
             import traceback
             traceback.print_exc()
-
-        # Wait for generation thread to complete
-        th.join(timeout=10.0)
-        if th.is_alive():
-            print("[STREAM] Warning: Generation thread still alive after timeout")
-        else:
-            print("[STREAM] Generation thread completed normally")
 
 
 # Simple in-memory resumable SSE session store + optional SQLite persistence
