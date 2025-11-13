@@ -73,11 +73,12 @@ from PIL import Image
 import numpy as np
 from huggingface_hub import snapshot_download, list_repo_files, hf_hub_download, get_hf_file_metadata
 
-# OCR import
-try:
-    from rapidocr_onnxruntime import RapidOCR
-except ImportError:
-    RapidOCR = None
+# OCR import (Disabled - use image captioning instead)
+# try:
+#     from rapidocr_onnxruntime import RapidOCR
+# except ImportError:
+#     RapidOCR = None
+RapidOCR = None  # Disabled
 
 # Server config
 PORT = int(os.getenv("PORT", "3000"))
@@ -119,19 +120,22 @@ EAGER_LOAD_MODEL = str(os.getenv("EAGER_LOAD_MODEL", "1")).lower() in ("1", "tru
 # Global thread pool executor for concurrent processing
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="inference")
 
-# Global OCR engine
-_ocr_engine = None
+# Global OCR engine (Disabled)
+# _ocr_engine = None
 
+# def get_ocr_engine():
+#     global _ocr_engine
+#     if _ocr_engine is None and RapidOCR is not None:
+#         try:
+#             _ocr_engine = RapidOCR()
+#             print("[OCR] RapidOCR engine initialized")
+#         except Exception as e:
+#             print(f"[OCR] Failed to initialize RapidOCR: {e}")
+#             _ocr_engine = None
+#     return _ocr_engine
 def get_ocr_engine():
-    global _ocr_engine
-    if _ocr_engine is None and RapidOCR is not None:
-        try:
-            _ocr_engine = RapidOCR()
-            print("[OCR] RapidOCR engine initialized")
-        except Exception as e:
-            print(f"[OCR] Failed to initialize RapidOCR: {e}")
-            _ocr_engine = None
-    return _ocr_engine
+    """Placeholder function - OCR disabled"""
+    return None
 
 def _log(msg: str):
     # Consistent, flush-immediate startup logs
@@ -1078,12 +1082,9 @@ def _startup_load_model():
         print(f"[startup] Database initialization failed: {e}")
 
     if EAGER_LOAD_MODEL:
-        print("[startup] EAGER_LOAD_MODEL=1: initializing model and OCR engine...")
+        print("[startup] EAGER_LOAD_MODEL=1: initializing model...")
+        print("[startup] OCR engine disabled - using image captioning instead")
         try:
-            # Initialize OCR engine first
-            _ = get_ocr_engine()
-            print("[startup] OCR engine initialized")
-
             # Then initialize the model
             _ = get_engine()
             print("[startup] Model loaded:", _engine.model_id if _engine else "unknown")
@@ -1375,115 +1376,34 @@ async def chat_completions(
     return StreamingResponse(sse_generator(), media_type="text/event-stream", headers=headers)
 
 
-@app.post("/ktp-ocr/", tags=["ocr"])
-async def ktp_ocr(image: UploadFile = File(...)):
-    print(f"[OCR] Starting KTP OCR processing for file: {image.filename}, content_type: {image.content_type}")
+# OCR endpoint disabled - use image captioning instead
+# @app.post("/ktp-ocr/", tags=["ocr"])
+# async def ktp_ocr(image: UploadFile = File(...)):
+#     # OCR functionality disabled
 
-    if not image.content_type.startswith("image/"):
-        print(f"[OCR] Invalid content type: {image.content_type}")
-        raise HTTPException(status_code=400, detail="File provided is not an image.")
+
+# Image Captioning for Multimodal Chat
+async def _generate_image_caption(image_bytes: bytes, context: Optional[str] = None) -> str:
+    """Generate image description using BLIP-2 model"""
+    print(f"[CAPTION] Generating image caption{' with context' if context else ''}")
 
     try:
-        # Read image contents
-        print(f"[OCR] Reading image contents...")
-        contents = await image.read()
-        print(f"[OCR] Image size: {len(contents)} bytes")
+        from image_caption import get_image_captioner
+        captioner = get_image_captioner()
 
-        pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
-        print(f"[OCR] PIL image loaded: {pil_image.size}, mode: {pil_image.mode}")
-
-        # Use RapidOCR for OCR processing
-        print(f"[OCR] Using RapidOCR for OCR processing")
-
-        # Get OCR engine
-        ocr_engine = get_ocr_engine()
-        if ocr_engine is None:
-            print(f"[OCR] RapidOCR not available")
-            raise HTTPException(status_code=503, detail="OCR engine not available")
-
-        # Extract text using RapidOCR
-        print(f"[OCR] Running RapidOCR text extraction...")
-        ocr_result = ocr_engine(pil_image)
-        print(f"[OCR] OCR completed, found {len(ocr_result[0]) if ocr_result and len(ocr_result) >= 1 else 0} text regions")
-
-        # Extract all text from OCR results
-        extracted_texts = []
-        if ocr_result and len(ocr_result) >= 1:
-            for item in ocr_result[0]:
-                if len(item) >= 2:
-                    text = str(item[1]).strip()
-                    # Handle potential Unicode issues
-                    try:
-                        text = text.replace('\uff1a', ':').replace('\uff0c', ',').replace('\u3002', '.')
-                        text = ''.join(c for c in text if ord(c) < 128 or c.isspace() or c in ':,-./')
-                        if text:
-                            extracted_texts.append(text)
-                    except Exception as e:
-                        print(f"[OCR] Error processing text: {e}")
-                        continue
-
-        # Parse KTP data from extracted texts
-        if extracted_texts:
-            print(f"[OCR] Extracted {len(extracted_texts)} text lines")
-            for i, text in enumerate(extracted_texts):
-                print(f"[OCR] Line {i+1}: '{text}'")
-            ktp_data = _parse_ktp_from_text(extracted_texts)
-            print(f"[OCR] Successfully parsed KTP data")
-            return JSONResponse(content=ktp_data)
+        # Generate caption
+        if context:
+            caption = captioner.caption_with_context(image_bytes, context)
         else:
-            print(f"[OCR] No text extracted from OCR")
-            # Return empty structure
-            empty_data = {
-                "nik": "",
-                "nama": "",
-                "tempat_lahir": "",
-                "tgl_lahir": "",
-                "jenis_kelamin": "",
-                "alamat": {
-                    "name": "",
-                    "rt_rw": "",
-                    "kel_desa": "",
-                    "kecamatan": ""
-                },
-                "agama": "",
-                "status_perkawinan": "",
-                "pekerjaan": "",
-                "kewarganegaraan": "",
-                "berlaku_hingga": ""
-            }
-            return JSONResponse(content=empty_data)
+            caption = captioner.caption_image(image_bytes)
+
+        print(f"[CAPTION] Generated: {caption}")
+        return caption
 
     except Exception as e:
-        print(f"[OCR] Unexpected error: {type(e).__name__}: {e}")
-        import traceback
-        print(f"[OCR] Traceback: {traceback.format_exc()}")
-        # Return default empty structure on any error
-        response_data = {
-            "nik": "",
-            "nama": "",
-            "tempat_lahir": "",
-            "tgl_lahir": "",
-            "jenis_kelamin": "",
-            "alamat": {
-                "name": "",
-                "rt_rw": "",
-                "kel_desa": "",
-                "kecamatan": ""
-            },
-            "agama": "",
-            "status_perkawinan": "",
-            "pekerjaan": "",
-            "kewarganegaraan": "",
-            "berlaku_hingga": ""
-        }
-        return JSONResponse(content=response_data)
-
-
-async def _fallback_vision_ocr(pil_image):
-    """Fallback to vision model if OCR fails"""
-    print(f"[OCR] Using vision model fallback")
-    try:
-        engine = get_engine()
+        print(f"[CAPTION] Error: {e}")
+        # Fallback to generic description
+        return "An image was uploaded for context"
         print(f"[OCR] Engine ready: {engine.model_id}")
     except Exception as e:
         print(f"[OCR] Engine not ready: {e}")
@@ -2539,6 +2459,173 @@ def ai_powered_search(request: AISearchRequest, db: Session = Depends(get_db)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI inference failed: {str(e)}")
+
+
+# ============================================================================
+# MULTIMODAL IMAGE CAPTIONING ENDPOINTS
+# ============================================================================
+
+class ImageCaptionRequest(BaseModel):
+    context: Optional[str] = None
+    max_length: int = 50
+    num_beams: int = 5
+
+class ImageCaptionResponse(BaseModel):
+    caption: str
+    model_info: dict
+
+@app.post("/api/image-caption", tags=["multimodal"], response_model=ImageCaptionResponse)
+async def caption_image_endpoint(
+    image: UploadFile = File(...),
+    context: Optional[str] = None,
+    max_length: int = 50,
+    num_beams: int = 5
+):
+    """
+    Generate image description using BLIP-2 model
+
+    Uploads an image and returns a natural language description.
+    Can be used for:
+    - Product catalog descriptions
+    - Image search and discovery
+    - Visual content understanding
+    """
+    print(f"[CAPTION] Processing image: {image.filename}, content_type: {image.content_type}")
+
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File provided is not an image.")
+
+    try:
+        # Read image contents
+        contents = await image.read()
+        print(f"[CAPTION] Image size: {len(contents)} bytes")
+
+        # Generate caption
+        caption = await _generate_image_caption(contents, context)
+
+        # Get model info
+        from image_caption import get_image_captioner
+        captioner = get_image_captioner()
+        model_info = captioner.get_model_info()
+
+        print(f"[CAPTION] Successfully generated caption: {caption[:100]}...")
+
+        return ImageCaptionResponse(
+            caption=caption,
+            model_info=model_info
+        )
+
+    except Exception as e:
+        print(f"[CAPTION] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Image captioning failed: {str(e)}")
+
+@app.post("/api/chat-with-image", tags=["multimodal"])
+async def chat_with_image(
+    image: UploadFile = File(...),
+    message: str = Query(..., description="Chat message about the image"),
+    user_id: Optional[int] = Query(None, description="User ID for conversation tracking")
+):
+    """
+    Chat with AI about an uploaded image
+
+    Upload an image and ask questions about it. The AI will:
+    1. Generate a description of the image using BLIP-2
+    2. Answer your questions about the image using Qwen3-4B
+
+    Use cases:
+    - "Describe this product"
+    - "What do you see in this image?"
+    - "Is this item suitable for [purpose]?"
+    """
+    print(f"[CHAT-IMG] Processing image chat: {image.filename}, user_id: {user_id}")
+    print(f"[CHAT-IMG] User message: {message}")
+
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File provided is not an image.")
+
+    try:
+        # Read image contents
+        contents = await image.read()
+        print(f"[CHAT-IMG] Image size: {len(contents)} bytes")
+
+        # Generate image caption
+        image_description = await _generate_image_caption(contents)
+        print(f"[CHAT-IMG] Image description: {image_description}")
+
+        # Get AI engine
+        engine = get_engine()
+
+        # Prepare prompt for AI
+        prompt = f"""The user has uploaded an image and asked: {message}
+
+Image Description: {image_description}
+
+Please answer the user's question about the image based on the description provided. Be helpful and specific."""
+
+        # Prepare messages
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+
+        # Generate AI response
+        response = engine.infer(messages, 1024, 0.7)
+
+        # Save conversation if user_id provided (marketplace feature)
+        if user_id:
+            from database import SessionLocal
+            from models import Conversation, Message
+
+            db = SessionLocal()
+            try:
+                # Get or create conversation
+                session_id = f"chat_img_{user_id}"
+                conversation = db.query(Conversation).filter(
+                    Conversation.session_id == session_id
+                ).first()
+
+                if not conversation:
+                    conversation = Conversation(session_id=session_id, user_id=user_id)
+                    db.add(conversation)
+                    db.commit()
+                    db.refresh(conversation)
+
+                # Save user message
+                user_msg = Message(
+                    conversation_id=conversation.id,
+                    role="user",
+                    content=f"[Image uploaded] {message}"
+                )
+                db.add(user_msg)
+
+                # Save AI response
+                ai_msg = Message(
+                    conversation_id=conversation.id,
+                    role="assistant",
+                    content=response
+                )
+                db.add(ai_msg)
+                db.commit()
+
+            except Exception as e:
+                print(f"[CHAT-IMG] Failed to save conversation: {e}")
+            finally:
+                db.close()
+
+        print(f"[CHAT-IMG] AI response: {response[:200]}...")
+
+        return {
+            "user_message": message,
+            "image_description": image_description,
+            "ai_response": response,
+            "conversation_saved": user_id is not None
+        }
+
+    except Exception as e:
+        print(f"[CHAT-IMG] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Image chat failed: {str(e)}")
 
 
 if __name__ == "__main__":

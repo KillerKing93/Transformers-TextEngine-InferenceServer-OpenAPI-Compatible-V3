@@ -47,13 +47,25 @@ Users with AI access can:
 - **Get Recommendations**: "Saya butuh laptop untuk programming, budget 10 juta, yang bagus apa?"
 - **Find Nearest Suppliers**: Products are matched based on user's location to show the closest available suppliers
 - **Compare Products**: AI helps compare features, prices, and reviews
+- **Visual Product Search**: Upload product images and get AI-powered descriptions and recommendations
 
-### 3. Location-Aware Intelligence
+### 3. Multimodal Image Support (NEW!)
+🖼️ **BLIP-2 Image Captioning Integration**
+- **High-Quality Image Descriptions**: Uses Salesforce/blip2-opt-2.7b model (2GB) for detailed image understanding
+- **Product Catalog Enhancement**: Automatically generate descriptions for uploaded product images
+- **Visual AI Chat**: Upload images and ask questions about them
+- **Image Search & Discovery**: Find similar products based on visual characteristics
+
+**New Multimodal Endpoints:**
+- `POST /api/image-caption` - Generate image descriptions
+- `POST /api/chat-with-image` - Chat with AI about uploaded images
+
+### 4. Location-Aware Intelligence
 - Automatic supplier-to-user distance calculation
 - Prioritize recommendations based on proximity
 - Suggest delivery or pickup options based on distance
 
-### 4. Natural Language Interaction
+### 5. Natural Language Interaction
 - Users can ask in natural Indonesian or English
 - AI understands context and user preferences over conversation
 - Personalized recommendations based on chat history
@@ -201,6 +213,50 @@ Content-Type: application/json
 **Requirements:**
 - User must have `ai_access_enabled: true`
 - Location coordinates help with distance sorting
+
+### Multimodal Image Capabilities
+
+#### Generate Image Descriptions
+```bash
+curl -X POST http://localhost:3000/api/image-caption \
+  -F "image=@product.jpg" \
+  -F "context=A product description for e-commerce"
+```
+
+**Response:**
+```json
+{
+  "caption": "A sleek black laptop computer sitting on a wooden desk with the screen showing a colorful interface and keyboard visible",
+  "model_info": {
+    "model_name": "Salesforce/blip2-opt-2.7b",
+    "device": "cpu",
+    "loaded": true,
+    "model_type": "BLIP-2 Vision-Language Model"
+  }
+}
+```
+
+#### Chat with AI About Images
+```bash
+curl -X POST "http://localhost:3000/api/chat-with-image?message=What%20is%20this%20product%20suitable%20for?&user_id=1" \
+  -F "image=@product.jpg"
+```
+
+**Response:**
+```json
+{
+  "user_message": "What is this product suitable for?",
+  "image_description": "A sleek black laptop computer sitting on a wooden desk with the screen showing a colorful interface and keyboard visible",
+  "ai_response": "Based on the image description, this appears to be a modern laptop suitable for work, study, and general computing tasks. The sleek black design suggests it's likely a business or professional laptop...",
+  "conversation_saved": true
+}
+```
+
+**Model Performance:**
+- **Size**: 2.7B parameters (2GB download)
+- **Quality**: High-quality detailed descriptions
+- **Speed**: Moderate (~3-5 seconds per image on CPU)
+- **Use Cases**: Product catalogs, visual search, AI chat about images
 
 ### Database Setup
 

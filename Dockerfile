@@ -53,6 +53,7 @@ COPY models.py .
 COPY database.py .
 COPY utils.py .
 COPY seed_data.py .
+COPY image_caption.py .
 COPY marketplace_demo.html .
 
 # Include client UI so root (/) can serve web/index.html
