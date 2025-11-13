@@ -26,6 +26,7 @@ class Supplier(Base):
     name = Column(String(255), nullable=False)
     business_name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255))  # For authentication
     phone = Column(String(50))
     address = Column(Text)
     latitude = Column(Float, nullable=False)  # For location-based search
@@ -75,11 +76,13 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255))  # For authentication
     phone = Column(String(50))
     latitude = Column(Float)
     longitude = Column(Float)
     city = Column(String(100))
     province = Column(String(100))
+    role = Column(String(20), default="user")  # user, supplier, admin
     ai_access_enabled = Column(Boolean, default=False)  # Premium feature flag
     preferences = Column(Text)  # JSON string for user preferences
     created_at = Column(DateTime, default=datetime.utcnow)

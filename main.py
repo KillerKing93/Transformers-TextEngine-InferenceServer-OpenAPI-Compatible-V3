@@ -1901,6 +1901,143 @@ def cancel_session(session_id: str):
 
 
 # ============================================================================
+# AUTHENTICATION API ENDPOINTS
+# ============================================================================
+
+from auth import (
+    hash_password,
+    verify_password,
+    create_tokens_for_user,
+    get_current_user,
+    get_current_active_user,
+    require_admin,
+    require_supplier,
+    Token,
+    UserLogin,
+    refresh_access_token
+)
+
+class AuthUserRegister(BaseModel):
+    name: str
+    email: str
+    password: str
+    city: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    role: str = "user"  # user, supplier, admin
+
+
+@app.post("/api/auth/register", tags=["auth"], response_model=Token)
+def register_auth_user(user: AuthUserRegister, db: Session = Depends(get_db)):
+    """
+    Register new user with authentication.
+
+    Creates user account with hashed password and returns JWT tokens.
+    Role can be: user, supplier, or admin.
+    """
+    # Check if email exists
+    existing = db.query(User).filter(User.email == user.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Hash password
+    hashed_password = hash_password(user.password)
+
+    # Create user
+    db_user = User(
+        name=user.name,
+        email=user.email,
+        hashed_password=hashed_password,
+        city=user.city,
+        latitude=user.latitude,
+        longitude=user.longitude,
+        role=user.role,
+        ai_access_enabled=(user.role in ["supplier", "admin"])  # Premium by default
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+
+    # Create tokens
+    tokens = create_tokens_for_user(
+        email=db_user.email,
+        role=db_user.role,
+        user_id=db_user.id
+    )
+
+    return tokens
+
+
+@app.post("/api/auth/login", tags=["auth"], response_model=Token)
+def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    """
+    Login user and return JWT tokens.
+
+    Authenticates user with email and password, returns access and refresh tokens.
+    """
+    # Find user
+    user = db.query(User).filter(User.email == credentials.email).first()
+
+    if not user or not user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+
+    # Verify password
+    if not verify_password(credentials.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+
+    # Create tokens
+    tokens = create_tokens_for_user(
+        email=user.email,
+        role=user.role,
+        user_id=user.id
+    )
+
+    return tokens
+
+
+@app.post("/api/auth/refresh", tags=["auth"])
+def refresh_token(refresh_token: str):
+    """
+    Refresh access token using refresh token.
+
+    Returns new access token without requiring re-authentication.
+    """
+    try:
+        new_access_token = refresh_access_token(refresh_token)
+        return {"access_token": new_access_token, "token_type": "bearer"}
+    except HTTPException as e:
+        raise e
+
+
+@app.get("/api/auth/me", tags=["auth"])
+def get_me(current_user: dict = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """
+    Get current authenticated user profile.
+
+    Requires valid JWT token in Authorization header.
+    """
+    user = db.query(User).filter(User.email == current_user["email"]).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "city": user.city,
+        "role": user.role,
+        "ai_access_enabled": user.ai_access_enabled,
+        "created_at": user.created_at
+    }
+
+
+# ============================================================================
 # MARKETPLACE API ENDPOINTS
 # ============================================================================
 

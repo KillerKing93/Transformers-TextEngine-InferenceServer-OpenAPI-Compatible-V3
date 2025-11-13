@@ -660,28 +660,32 @@ def test_stream_resume_data_integrity_with_unicode():
             assert actual == expected, f"Content mismatch: '{actual}' != '{expected}'"
 
 def test_ktp_ocr_success():
-    with patched_engine() as fake_engine:
-        # Configure the fake engine to return a specific JSON structure for this test
-        expected_json = {
-            "nik": "1234567890123456",
-            "nama": "JOHN DOE",
-            "tempat_lahir": "JAKARTA",
-            "tgl_lahir": "01-01-1990",
-            "jenis_kelamin": "LAKI-LAKI",
-            "alamat": {
-                "name": "JL. JEND. SUDIRMAN KAV. 52-53",
-                "rt_rw": "001/001",
-                "kel_desa": "SENAYAN",
-                "kecamatan": "KEBAYORAN BARU",
-            },
-            "agama": "ISLAM",
-            "status_perkawinan": "KAWIN",
-            "pekerjaan": "PEGAWAI SWASTA",
-            "kewarganegaraan": "WNI",
-            "berlaku_hingga": "SEUMUR HIDUP",
-        }
-        fake_engine.infer = lambda messages, max_tokens, temperature: json.dumps(expected_json)
+    # Mock RapidOCR to return test text lines that should parse to expected KTP data
+    test_ocr_texts = [
+        "NIK : 1234567890123456",
+        "Nama : JOHN DOE",
+        "Tempat/Tgl Lahir : JAKARTA, 01-01-1990",
+        "Jenis Kelamin : LAKI-LAKI",
+        "Alamat : JL. JEND. SUDIRMAN KAV. 52-53",
+        "RT/RW : 001/001",
+        "Kel/Desa : SENAYAN",
+        "Kecamatan : KEBAYORAN BARU",
+        "Agama : ISLAM",
+        "Status Perkawinan : KAWIN",
+        "Pekerjaan : PEGAWAI SWASTA",
+        "Kewarganegaraan : WNI",
+        "Berlaku Hingga : SEUMUR HIDUP"
+    ]
 
+    # Mock the OCR result format: [[(bbox, text, confidence), ...]]
+    mock_ocr_result = [[(None, text, 0.9) for text in test_ocr_texts]]
+
+    # Patch get_ocr_engine to return a mock OCR engine
+    original_get_ocr_engine = main.get_ocr_engine
+    mock_engine = lambda img: mock_ocr_result
+    main.get_ocr_engine = lambda: mock_engine
+
+    try:
         client = get_client()
         with open("image.jpg", "rb") as f:
             files = {"image": ("image.jpg", f, "image/jpeg")}
@@ -690,4 +694,19 @@ def test_ktp_ocr_success():
         assert r.status_code == 200
         body = r.json()
         assert body["nik"] == "1234567890123456"
-        assert body["nama"] == "JOHN DOE"
+        assert body["nama"] == "John Doe"
+        assert body["tempat_lahir"] == "Jakarta"
+        assert body["tgl_lahir"] == "01-01-1990"
+        assert body["jenis_kelamin"] == "LAKI-LAKI"
+        assert body["alamat"]["name"] == "JL. JEND. SUDIRMAN KAV. 52-53"
+        assert body["alamat"]["rt_rw"] == "001/001"
+        assert body["alamat"]["kel_desa"] == "Senayan"
+        assert body["alamat"]["kecamatan"] == "Kebayoran Baru"
+        assert body["agama"] == "Islam"
+        assert body["status_perkawinan"] == "Kawin"
+        assert body["pekerjaan"] == "Pegawai Swasta"
+        assert body["kewarganegaraan"] == "Wni"
+        assert body["berlaku_hingga"] == "Seumur Hidup"
+    finally:
+        # Restore original function
+        main.get_ocr_engine = original_get_ocr_engine
