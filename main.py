@@ -1033,8 +1033,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Startup hook is defined after get_engine() so globals are initialized first.
@@ -1171,6 +1173,12 @@ def health():
         }
     },
 )
+
+@app.options("/v1/chat/completions", tags=["chat"])
+async def chat_completions_options():
+    """Handle OPTIONS preflight for chat completions endpoint"""
+    return {"message": "OK"}
+
 async def chat_completions(
     request: Request,
     body: ChatRequest,
@@ -1402,9 +1410,13 @@ async def chat_completions(
                 pass
 
     headers = {
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
+        # Additional headers for HTTP/2 and Hugging Face Spaces compatibility
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Cache-Control, Last-Event-ID",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     }
     return StreamingResponse(sse_generator(), media_type="text/event-stream", headers=headers)
 
@@ -2714,6 +2726,11 @@ def debug_test_generation(message: str = "Hello, how are you?"):
             "message": "Generation test failed"
         }
 
+@app.options("/debug/test-stream", tags=["debug"])
+async def debug_test_stream_options():
+    """Handle OPTIONS preflight for streaming endpoint"""
+    return {"message": "OK"}
+
 @app.post("/debug/test-stream", tags=["debug"])
 def debug_test_stream():
     """Test SSE streaming functionality"""
@@ -2761,9 +2778,13 @@ def debug_test_stream():
             yield "data: [DONE]\n\n"
 
     headers = {
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
+        # Additional headers for HTTP/2 and Hugging Face Spaces compatibility
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Cache-Control, Last-Event-ID",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     }
     return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=headers)
 
