@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  HF_SPACE_ID: KillerKing93/Transformers-InferenceServer-OpenAPI
+  HF_SPACE_ID: KillerKing93/Transformers-TextEngine-InferenceServer-OpenAPI-Compatible-V3
 
 jobs:
   sync:
