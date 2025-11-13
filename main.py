@@ -868,12 +868,21 @@ class Engine:
         do_sample = temperature is not None and float(temperature) > 0.0
         print(f"[STREAM] do_sample={do_sample}")
 
+        # Fix: Explicitly get tokenizer from processor for Qwen3
+        tokenizer = getattr(self.processor, "tokenizer", None)
+        if tokenizer is None:
+            print("[STREAM] ERROR: No tokenizer found in processor!")
+            return
+
+        print(f"[STREAM] Tokenizer vocab size: {getattr(tokenizer, 'vocab_size', 'unknown')}")
+
         streamer = TextIteratorStreamer(
-            getattr(self.processor, "tokenizer", None),
+            tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
+            timeout=60.0,  # Add timeout to prevent hanging
         )
-        print("[STREAM] Created TextIteratorStreamer")
+        print("[STREAM] Created TextIteratorStreamer with timeout")
 
         gen_kwargs = dict(
             **inputs,
@@ -904,8 +913,8 @@ class Engine:
                 print("[STREAM] Generation thread started")
                 with torch.no_grad():
                     print("[STREAM] Starting model.generate()")
-                    self.model.generate(**gen_kwargs)
-                    print("[STREAM] model.generate() completed")
+                    result_ids = self.model.generate(**gen_kwargs)
+                    print(f"[STREAM] model.generate() completed. Generated shape: {result_ids.shape if hasattr(result_ids, 'shape') else 'unknown'}")
             except Exception as e:
                 print(f"[STREAM] Generation error: {e}")
                 import traceback
@@ -913,25 +922,57 @@ class Engine:
                 # Let streamer finish gracefully even if generation throws
                 pass
 
-        th = threading.Thread(target=_runner)
+        th = threading.Thread(target=_runner, daemon=True)  # Make daemon thread to prevent hanging
         th.start()
         print("[STREAM] Generation thread started")
 
         piece_count = 0
         print("[STREAM] Starting to iterate through streamer...")
-        for piece in streamer:
-            piece_count += 1
-            print(f"[STREAM] Generated piece #{piece_count}: '{piece}'")
-            if piece:
-                print(f"[STREAM] Yielding piece: '{piece[:50]}...'")
-                yield piece
-            else:
-                print(f"[STREAM] Empty piece received, skipping")
 
-        print(f"[STREAM] Stream ended. Total pieces: {piece_count}")
-        th.join(timeout=5.0)
+        # Stream with timeout protection using time-based check
+        import time
+        start_time = time.time()
+        timeout_seconds = 120  # 2 minute total timeout
+        last_piece_time = start_time
+        piece_timeout = 30  # 30 seconds between pieces
+
+        try:
+            for piece in streamer:
+                current_time = time.time()
+
+                # Check total timeout
+                if current_time - start_time > timeout_seconds:
+                    print(f"[STREAM] Total timeout reached after {piece_count} pieces")
+                    break
+
+                # Check piece timeout
+                if current_time - last_piece_time > piece_timeout:
+                    print(f"[STREAM] Piece timeout after {piece_count} pieces")
+                    break
+
+                piece_count += 1
+                last_piece_time = current_time
+                print(f"[STREAM] Generated piece #{piece_count}: '{piece}'")
+
+                if piece:
+                    print(f"[STREAM] Yielding piece: '{piece[:50]}...'")
+                    yield piece
+                else:
+                    print(f"[STREAM] Empty piece received, skipping")
+
+            print(f"[STREAM] Stream ended. Total pieces: {piece_count}")
+
+        except Exception as e:
+            print(f"[STREAM] Streaming error: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Wait for generation thread to complete
+        th.join(timeout=10.0)
         if th.is_alive():
             print("[STREAM] Warning: Generation thread still alive after timeout")
+        else:
+            print("[STREAM] Generation thread completed normally")
 
 
 # Simple in-memory resumable SSE session store + optional SQLite persistence
