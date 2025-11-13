@@ -2692,6 +2692,25 @@ def debug_model():
             "message": "Model not loaded"
         }
 
+@app.post("/debug/simple-chat", tags=["debug"])
+def debug_simple_chat(message: str = "Hello"):
+    """Simple chat endpoint without session logic"""
+    try:
+        engine = get_engine()
+        messages = [{"role": "user", "content": message}]
+        result = engine.infer(messages, max_tokens=50, temperature=0.7)
+        return {
+            "status": "success",
+            "message": message,
+            "response": result
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "Simple chat failed"
+        }
+
 @app.post("/debug/test-generation", tags=["debug"])
 def debug_test_generation(message: str = "Hello, how are you?"):
     """Test simple text generation"""
