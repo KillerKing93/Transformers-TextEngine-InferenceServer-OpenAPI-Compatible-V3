@@ -1314,11 +1314,18 @@ async def chat_completions(
 
             # Stream model pieces
             try:
+                print(f"[STREAM] Starting streaming inference for session {session_id}")
+                pieces_generated = 0
+
                 for piece in engine.infer_stream(
                     body.messages, max_tokens=max_tokens, temperature=temperature, cancel_event=sess.cancel_event
                 ):
                     if not piece:
                         continue
+
+                    pieces_generated += 1
+                    print(f"[STREAM] Generated piece {pieces_generated}: '{piece[:50]}...'")
+
                     payload = {
                         "id": session_id,
                         "object": "chat.completion.chunk",
@@ -1327,12 +1334,28 @@ async def chat_completions(
                         "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
                     }
                     yield push(payload).encode("utf-8")
+
                     # Cooperative early-exit if cancel requested
                     if sess.cancel_event.is_set():
+                        print(f"[STREAM] Cancel requested for session {session_id}")
                         break
-            except Exception:
-                # On engine error, terminate gracefully
-                pass
+
+                print(f"[STREAM] Streaming completed. Generated {pieces_generated} pieces for session {session_id}")
+
+            except Exception as e:
+                print(f"[STREAM] Error during streaming for session {session_id}: {type(e).__name__}: {e}")
+                import traceback
+                print(f"[STREAM] Traceback: {traceback.format_exc()}")
+
+                # Send error chunk and terminate gracefully
+                error_payload = {
+                    "id": session_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": engine.model_id,
+                    "choices": [{"index": 0, "delta": {"content": "I apologize, but I encountered an error during streaming."}, "finish_reason": "error"}],
+                }
+                yield push(error_payload).encode("utf-8")
 
             # Finish chunk
             finish = {
@@ -2690,6 +2713,59 @@ def debug_test_generation(message: str = "Hello, how are you?"):
             "error": str(e),
             "message": "Generation test failed"
         }
+
+@app.post("/debug/test-stream", tags=["debug"])
+def debug_test_stream():
+    """Test SSE streaming functionality"""
+    async def stream_generator():
+        try:
+            engine = get_engine()
+            messages = [{"role": "user", "content": "Hello, please count to 5 slowly"}]
+
+            print(f"[STREAM-DEBUG] Testing streaming with simple message")
+
+            # Use the same streaming logic as main endpoint
+            for piece in engine.infer_stream(messages, max_tokens=50, temperature=0.7):
+                if piece:
+                    print(f"[STREAM-DEBUG] Streaming piece: '{piece}'")
+                    chunk = {
+                        "id": f"debug_{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": engine.model_id,
+                        "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+            # Send final chunk
+            final_chunk = {
+                "id": f"debug_{int(time.time())}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": engine.model_id,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            print(f"[STREAM-DEBUG] Error: {e}")
+            import traceback
+            print(f"[STREAM-DEBUG] Traceback: {traceback.format_exc()}")
+
+            error_chunk = {
+                "error": str(e),
+                "message": "Streaming test failed"
+            }
+            yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=headers)
 
 
 if __name__ == "__main__":
