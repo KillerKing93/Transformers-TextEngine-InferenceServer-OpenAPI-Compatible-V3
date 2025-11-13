@@ -1195,23 +1195,111 @@ async def chat_completions(
     temperature = float(body.temperature) if body.temperature is not None else DEFAULT_TEMPERATURE
     do_stream = bool(body.stream)
 
-    # Parse Last-Event-ID (header or ?last_event_id) and derive/align session_id
-    le_id = last_event_id_header or last_event_id
-    sid_from_header: Optional[str] = None
-    last_idx_from_header: int = -1
-    if le_id:
-        try:
-            sid_from_header, idx_str = le_id.split(":", 1)
-            last_idx_from_header = int(idx_str)
-        except Exception:
-            sid_from_header = None
-            last_idx_from_header = -1
+    # TEMPORARY: Simplify session handling to fix endpoint hanging
+    # TODO: Investigate why session logic causes hangs on Hugging Face Spaces
+    print(f"[CHAT] Received request: stream={do_stream}, messages={len(body.messages)}")
 
-    session_id = body.session_id or sid_from_header or f"sess-{uuid.uuid4().hex[:12]}"
-    sess = _STORE.get_or_create(session_id)
-    created_ts = int(sess.created)
-    if _DB_STORE is not None:
-        _DB_STORE.ensure_session(session_id, created_ts)
+    if not do_stream:
+        # Non-streaming path - simplified without session logic
+        try:
+            print(f"[CHAT] Starting non-streaming inference")
+            content = engine.infer(body.messages, max_tokens=max_tokens, temperature=temperature)
+            print(f"[CHAT] Non-streaming inference completed")
+
+            now = int(time.time())
+            prompt_tokens = int((engine.last_context_info or {}).get("prompt_tokens") or 0)
+            completion_tokens = max(1, len((content or "").split()))
+            total_tokens = prompt_tokens + completion_tokens
+
+            resp = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object": "chat.completion",
+                "created": now,
+                "model": engine.model_id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+                "system_fingerprint": "fastapi",
+            }
+            return resp
+        except Exception as e:
+            print(f"[CHAT] Non-streaming error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
+
+    # STREAMING PATH - Simplified version
+    try:
+        print(f"[CHAT] Starting simplified streaming")
+
+        async def stream_generator():
+            try:
+                # Initial assistant role delta
+                session_id = f"sess-{uuid.uuid4().hex[:12]}"
+                head = {
+                    "id": session_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": engine.model_id,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+                    "system_fingerprint": "fastapi",
+                }
+                yield f"data: {json.dumps(head, ensure_ascii=False)}\n\n"
+
+                # Stream using our fixed infer_stream method
+                for piece in engine.infer_stream(body.messages, max_tokens=max_tokens, temperature=temperature):
+                    if piece:
+                        payload = {
+                            "id": session_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": engine.model_id,
+                            "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+                # Final chunk
+                final_chunk = {
+                    "id": session_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": engine.model_id,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+                yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                print(f"[CHAT] Streaming error: {e}")
+                import traceback
+                traceback.print_exc()
+                error_chunk = {"error": str(e)}
+                yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+        headers = {
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control, Last-Event-ID",
+        }
+        return StreamingResponse(stream_generator(), media_type="text/event-stream", headers=headers)
+
+    except Exception as e:
+        print(f"[CHAT] Streaming setup error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Streaming error: {str(e)}")
 
     if not do_stream:
         # Non-streaming path
