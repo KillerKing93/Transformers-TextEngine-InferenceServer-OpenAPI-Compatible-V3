@@ -1125,6 +1125,25 @@ def root():
     return Response(html, media_type="text/html; charset=utf-8")
 
 
+@app.get("/debug", tags=["meta"], include_in_schema=False)
+def debug_interface():
+    """
+    Serve the debug interface for comprehensive testing and monitoring
+    """
+    debug_path = os.path.join(ROOT_DIR, "web", "debug_interface.html")
+    if os.path.exists(debug_path):
+        return FileResponse(debug_path, media_type="text/html; charset=utf-8")
+
+    # Fallback if file doesn't exist
+    html = """<!doctype html><html><head><meta charset='utf-8'><title>Debug Interface</title></head>
+    <body style="font-family:system-ui,Segoe UI,Roboto;padding:24px;background:#1a202c;color:#e2e8f0">
+    <h2>Debug Interface Not Found</h2>
+    <p>The debug interface file was not found. Please ensure debug_interface.html is in the web directory.</p>
+    <p><a href="/" style="color:#93c5fd">Return to Main Interface</a></p>
+    </body></html>"""
+    return Response(html, media_type="text/html; charset=utf-8")
+
+
 @app.get("/openapi.yaml", tags=["meta"])
 def openapi_yaml():
     """Serve OpenAPI schema as YAML for tooling compatibility."""

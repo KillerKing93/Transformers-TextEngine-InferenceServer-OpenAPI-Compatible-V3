@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Interface - Qwen3 Inference Server</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .header h1 {
+            color: #4a5568;
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .status-card {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .status-card h3 {
+            color: #2d3748;
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+        }
+
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            padding: 5px 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .status-value {
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        .chat-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+        }
+
+        .chat-tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+            color: #718096;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .tab.active {
+            color: #4a5568;
+            border-bottom-color: #667eea;
+            font-weight: 600;
+        }
+
+        .tab:hover {
+            color: #4a5568;
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .chat-messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #f8fafc;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+
+        .user-message {
+            background: #4299e1;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .assistant-message {
+            background: #e2e8f0;
+            color: #2d3748;
+        }
+
+        .debug-message {
+            background: #fef5e7;
+            border: 1px solid #f6ad55;
+            color: #744210;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            max-width: 95%;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .input-group input, .input-group select, .input-group textarea {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .input-group input:focus, .input-group select:focus, .input-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #4299e1;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #3182ce;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(66, 153, 225, 0.3);
+        }
+
+        .btn-secondary {
+            background: #718096;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #4a5568;
+        }
+
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #38a169;
+        }
+
+        .debug-log {
+            background: #1a202c;
+            color: #e2e8f0;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            height: 200px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            padding: 3px 0;
+        }
+
+        .log-error {
+            color: #fc8181;
+        }
+
+        .log-success {
+            color: #68d391;
+        }
+
+        .log-info {
+            color: #63b3ed;
+        }
+
+        .log-warning {
+            color: #f6ad55;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .endpoint-info {
+            background: #edf2f7;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+            color: #4a5568;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4299e1;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .streaming-chunk {
+            background: #f0fff4;
+            border-left: 3px solid #48bb78;
+            padding: 8px;
+            margin-bottom: 5px;
+            border-radius: 0 4px 4px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+
+        .timestamp {
+            color: #718096;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Debug Interface - Qwen3 Inference Server</h1>
+            <p>Comprehensive debugging and testing interface for the inference server</p>
+        </div>
+
+        <!-- Status Cards -->
+        <div class="status-grid">
+            <div class="status-card">
+                <h3>🏥 Server Health</h3>
+                <div class="status-item">
+                    <span>Status:</span>
+                    <span class="status-value" id="server-status">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span>Model Ready:</span>
+                    <span class="status-value" id="model-ready">Checking...</span>
+                </div>
+                <div class="status-item">
+                    <span>Model ID:</span>
+                    <span class="status-value" id="model-id" style="font-size: 0.8rem;">Checking...</span>
+                </div>
+            </div>
+
+            <div class="status-card">
+                <h3>🔧 API Endpoints</h3>
+                <div class="endpoint-info">
+                    <strong>Working Endpoints:</strong><br>
+                    • Health: <code>GET /health</code><br>
+                    • Simple Chat: <code>POST /debug/simple-chat</code><br>
+                    • Test Stream: <code>POST /debug/test-stream</code><br>
+                    • Model Debug: <code>GET /debug/model</code>
+                </div>
+            </div>
+
+            <div class="status-card">
+                <h3>📊 System Info</h3>
+                <div class="status-item">
+                    <span>API Base URL:</span>
+                    <span class="status-value" id="api-base">Current Space</span>
+                </div>
+                <div class="status-item">
+                    <span>Last Check:</span>
+                    <span class="status-value" id="last-check">Never</span>
+                </div>
+                <div class="status-item">
+                    <span>Connection:</span>
+                    <span class="status-value" id="connection-status">Unknown</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Interface -->
+        <div class="chat-container">
+            <div class="chat-tabs">
+                <button class="tab active" onclick="switchTab('chat')">💬 Chat Test</button>
+                <button class="tab" onclick="switchTab('streaming')">🌊 Streaming Test</button>
+                <button class="tab" onclick="switchTab('debug')">🔧 Debug Mode</button>
+                <button class="tab" onclick="switchTab('logs')">📋 Logs</button>
+            </div>
+
+            <!-- Chat Messages -->
+            <div id="chat-messages" class="chat-messages"></div>
+
+            <!-- Controls -->
+            <div class="controls">
+                <input type="text" id="message-input" placeholder="Enter your message here..." value="Hello! Can you count to 5 for me?">
+                <select id="max-tokens">
+                    <option value="10">10 tokens</option>
+                    <option value="20">20 tokens</option>
+                    <option value="50" selected>50 tokens</option>
+                    <option value="100">100 tokens</option>
+                </select>
+                <select id="temperature">
+                    <option value="0.1">0.1 (precise)</option>
+                    <option value="0.7" selected>0.7 (balanced)</option>
+                    <option value="1.0">1.0 (creative)</option>
+                </select>
+            </div>
+
+            <div class="controls">
+                <button class="btn btn-primary" onclick="sendChatMessage()">💬 Send Chat</button>
+                <button class="btn btn-success" onclick="sendStreamingMessage()">🌊 Start Streaming</button>
+                <button class="btn btn-secondary" onclick="checkHealth()">🏥 Check Health</button>
+                <button class="btn btn-secondary" onclick="testModel()">🔧 Test Model</button>
+                <button class="btn btn-secondary" onclick="clearMessages()">🗑️ Clear Messages</button>
+            </div>
+
+            <!-- Debug Log -->
+            <div id="debug-log" class="debug-log hidden"></div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE = window.location.origin; // Automatically use current domain
+        let currentTab = 'chat';
+        let streamingController = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            updateServerStatus();
+            logMessage('info', 'Debug interface initialized');
+            logMessage('info', `API Base: ${API_BASE}`);
+        });
+
+        // Tab switching
+        function switchTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+
+            if (tab === 'logs') {
+                document.getElementById('debug-log').classList.remove('hidden');
+            } else {
+                document.getElementById('debug-log').classList.add('hidden');
+            }
+
+            logMessage('info', `Switched to ${tab} tab`);
+        }
+
+        // Server status check
+        async function updateServerStatus() {
+            try {
+                logMessage('info', 'Checking server health...');
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+
+                document.getElementById('server-status').textContent = data.ok ? '✅ Online' : '❌ Error';
+                document.getElementById('server-status').style.color = data.ok ? '#48bb78' : '#fc8181';
+                document.getElementById('model-ready').textContent = data.modelReady ? '✅ Ready' : '❌ Not Ready';
+                document.getElementById('model-ready').style.color = data.modelReady ? '#48bb78' : '#fc8181';
+                document.getElementById('model-id').textContent = data.modelId ? data.modelId.split('/').pop() : 'Unknown';
+                document.getElementById('connection-status').textContent = '✅ Connected';
+                document.getElementById('connection-status').style.color = '#48bb78';
+                document.getElementById('last-check').textContent = new Date().toLocaleTimeString();
+
+                logMessage('success', `Server health check passed: ${data.modelId}`);
+            } catch (error) {
+                document.getElementById('server-status').textContent = '❌ Offline';
+                document.getElementById('server-status').style.color = '#fc8181';
+                document.getElementById('model-ready').textContent = '❌ Unknown';
+                document.getElementById('connection-status').textContent = '❌ Failed';
+                document.getElementById('connection-status').style.color = '#fc8181';
+                document.getElementById('last-check').textContent = new Date().toLocaleTimeString();
+
+                logMessage('error', `Health check failed: ${error.message}`);
+            }
+        }
+
+        // Send chat message (non-streaming)
+        async function sendChatMessage() {
+            const message = document.getElementById('message-input').value;
+            const maxTokens = parseInt(document.getElementById('max-tokens').value);
+            const temperature = parseFloat(document.getElementById('temperature').value);
+
+            if (!message.trim()) {
+                logMessage('warning', 'Please enter a message');
+                return;
+            }
+
+            addMessage('user', message);
+            addMessage('debug', `Sending request: max_tokens=${maxTokens}, temperature=${temperature}`);
+
+            try {
+                logMessage('info', 'Sending non-streaming chat request...');
+
+                const response = await fetch(`${API_BASE}/debug/simple-chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    addMessage('assistant', data.response);
+                    logMessage('success', `Response received (${data.response.length} characters)`);
+                } else {
+                    addMessage('assistant', `Error: ${data.error}`);
+                    logMessage('error', `API error: ${data.error}`);
+                }
+
+            } catch (error) {
+                addMessage('assistant', `Network error: ${error.message}`);
+                logMessage('error', `Network error: ${error.message}`);
+            }
+        }
+
+        // Send streaming message
+        async function sendStreamingMessage() {
+            const message = document.getElementById('message-input').value;
+            const maxTokens = parseInt(document.getElementById('max-tokens').value);
+            const temperature = parseFloat(document.getElementById('temperature').value);
+
+            if (!message.trim()) {
+                logMessage('warning', 'Please enter a message');
+                return;
+            }
+
+            addMessage('user', message);
+            addMessage('debug', `Starting streaming: max_tokens=${maxTokens}, temperature=${temperature}`);
+
+            // Create a placeholder for streaming response
+            const streamingMessage = addMessage('assistant', '🌊 Starting streaming...');
+
+            try {
+                logMessage('info', 'Starting SSE streaming request...');
+
+                // Cancel any existing stream
+                if (streamingController) {
+                    streamingController.abort();
+                }
+
+                streamingController = new AbortController();
+
+                const response = await fetch(`${API_BASE}/debug/test-stream`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({}),
+                    signal: streamingController.signal
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let chunkCount = 0;
+
+                updateStreamingMessage(streamingMessage, '🌊 Receiving streaming data...\n\n');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+
+                    if (done) {
+                        logMessage('info', `Streaming completed: ${chunkCount} chunks received`);
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                chunkCount++;
+
+                                if (data.choices && data.choices[0] && data.choices[0].delta && data.choices[0].delta.content) {
+                                    const content = data.choices[0].delta.content;
+                                    appendToStreamingMessage(streamingMessage, content);
+                                    logMessage('info', `Chunk ${chunkCount}: "${content}"`);
+                                }
+
+                                if (data.choices && data.choices[0] && data.choices[0].finish_reason === 'stop') {
+                                    updateStreamingMessage(streamingMessage, streamingMessage.textContent + '\n\n✅ Streaming completed');
+                                    logMessage('success', 'Streaming finished successfully');
+                                }
+
+                            } catch (e) {
+                                if (line.trim() === 'data: [DONE]') {
+                                    updateStreamingMessage(streamingMessage, streamingMessage.textContent + '\n\n✅ Streaming completed');
+                                    logMessage('success', 'Streaming finished with [DONE]');
+                                } else {
+                                    logMessage('warning', `Failed to parse chunk: ${line}`);
+                                }
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    updateStreamingMessage(streamingMessage, streamingMessage.textContent + '\n\n⏹️ Streaming cancelled');
+                    logMessage('info', 'Streaming was cancelled');
+                } else {
+                    updateStreamingMessage(streamingMessage, `❌ Streaming error: ${error.message}`);
+                    logMessage('error', `Streaming error: ${error.message}`);
+                }
+            } finally {
+                streamingController = null;
+            }
+        }
+
+        // Test model
+        async function testModel() {
+            try {
+                logMessage('info', 'Testing model status...');
+
+                const response = await fetch(`${API_BASE}/debug/model`);
+                const data = await response.json();
+
+                addMessage('debug', `Model Test Results:\nStatus: ${data.status}\nModel ID: ${data.model_id}\nDevice: ${data.device}\nMessage: ${data.message}`);
+
+                logMessage('success', `Model test passed: ${data.status}`);
+
+            } catch (error) {
+                addMessage('debug', `Model test failed: ${error.message}`);
+                logMessage('error', `Model test error: ${error.message}`);
+            }
+        }
+
+        // Check health
+        async function checkHealth() {
+            await updateServerStatus();
+        }
+
+        // Clear messages
+        function clearMessages() {
+            document.getElementById('chat-messages').innerHTML = '';
+            logMessage('info', 'Messages cleared');
+        }
+
+        // Add message to chat
+        function addMessage(type, content) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+
+            if (type === 'assistant') {
+                messageDiv.innerHTML = `<strong>Assistant:</strong> ${content}`;
+            } else if (type === 'user') {
+                messageDiv.innerHTML = `<strong>You:</strong> ${content}`;
+            } else if (type === 'debug') {
+                messageDiv.className = 'message debug-message';
+                messageDiv.innerHTML = `<strong>🔧 Debug:</strong> ${content}`;
+            }
+
+            messageDiv.innerHTML += `<br><span class="timestamp">${new Date().toLocaleTimeString()}</span>`;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+            return messageDiv;
+        }
+
+        // Update streaming message
+        function updateStreamingMessage(messageElement, content) {
+            messageElement.innerHTML = `<strong>Assistant:</strong> ${content}<br><span class="timestamp">${new Date().toLocaleTimeString()}</span>`;
+            document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+        }
+
+        // Append to streaming message
+        function appendToStreamingMessage(messageElement, content) {
+            const currentContent = messageElement.innerHTML;
+            const assistantText = currentContent.replace(/<strong>Assistant:<\/strong>.*?<br>/, '');
+            messageElement.innerHTML = `<strong>Assistant:</strong> ${assistantText}${content}<br><span class="timestamp">${new Date().toLocaleTimeString()}</span>`;
+            document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+        }
+
+        // Add log entry
+        function logMessage(level, message) {
+            const logDiv = document.getElementById('debug-log');
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry log-${level}`;
+
+            const timestamp = new Date().toLocaleTimeString();
+            const levelIcon = {
+                'info': 'ℹ️',
+                'success': '✅',
+                'warning': '⚠️',
+                'error': '❌'
+            }[level] || 'ℹ️';
+
+            logEntry.textContent = `[${timestamp}] ${levelIcon} ${message}`;
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // Auto-update status every 30 seconds
+        setInterval(updateServerStatus, 30000);
+    </script>
+</body>
+</html>
