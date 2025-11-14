@@ -3,6 +3,9 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.6
 
+# System monitoring
+psutil>=6.0.0
+
 # Database (Marketplace)
 sqlalchemy>=2.0.0
 alembic>=1.12.0
