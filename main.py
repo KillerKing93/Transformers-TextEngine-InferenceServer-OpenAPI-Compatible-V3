@@ -1102,28 +1102,12 @@ def _startup_load_model():
 @app.get("/", tags=["meta"], include_in_schema=False)
 def root():
     """
-    Serve the client web UI. The UI calls an external Hugging Face Space API
-    (default is KillerKing93/Transformers-TextEngine-OpenAPI) and does NOT
-    use internal server endpoints for chat. You can change the base via the input
-    field or ?api= query string in the page.
+    Redirect to the simple chat interface to avoid CORS issues with external scripts.
+    The main interface loads external dependencies that get blocked on Hugging Face Spaces.
     """
-    index_path = os.path.join(ROOT_DIR, "web", "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path, media_type="text/html; charset=utf-8")
-    # Inline minimal fallback to make root return an HTML page even if COPY failed
-    html = """<!doctype html><html><head><meta charset='utf-8'><title>Qwen3‑VL Chat</title></head>
-    <body style="font-family:system-ui,Segoe UI,Roboto;padding:24px;background:#0f172a;color:#e2e8f0">
-    <h2>Qwen3‑VL Chat UI</h2>
-    <p>The static UI was not found inside the container. This page is a fallback.</p>
-    <p>Try pulling the latest image or rebuilding the Space so that <code>/app/web/index.html</code> is present.</p>
-    <p>Once copied, this URL will serve the full UI. For now you can open the raw UI file from the repo or call the API directly.</p>
-    <ul>
-      <li><a href="./docs" style="color:#93c5fd">Swagger UI</a></li>
-      <li><a href="./openapi.yaml" style="color:#93c5fd">OpenAPI YAML</a></li>
-    </ul>
-    </body></html>"""
-    return Response(html, media_type="text/html; charset=utf-8")
-
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/simple", status_code=302)
+  
 
 @app.get("/debug", tags=["meta"], include_in_schema=False)
 def debug_interface():
