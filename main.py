@@ -2788,14 +2788,6 @@ def debug_model():
 def usage_live():
     """Provide basic usage status for Hugging Face Space monitoring"""
     try:
-        import psutil
-        import os
-
-        # Get basic system info
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-
         # Check if model is loaded
         try:
             engine = get_engine()
@@ -2808,18 +2800,12 @@ def usage_live():
         return {
             "status": "ok",
             "timestamp": int(time.time()),
-            "system": {
-                "cpu_percent": cpu_percent,
-                "memory_percent": memory.percent,
-                "memory_used_gb": round(memory.used / (1024**3), 2),
-                "disk_percent": disk.percent,
-                "disk_used_gb": round(disk.used / (1024**3), 2)
-            },
             "model": {
                 "status": model_status,
                 "model_id": model_id
             },
-            "uptime": int(time.time() - getattr(app.state, 'start_time', time.time()))
+            "uptime": int(time.time() - getattr(app.state, 'start_time', time.time())),
+            "message": "Space is running normally"
         }
     except Exception as e:
         return {
