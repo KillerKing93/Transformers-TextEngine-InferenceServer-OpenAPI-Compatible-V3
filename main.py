@@ -1144,6 +1144,25 @@ def debug_interface():
     return Response(html, media_type="text/html; charset=utf-8")
 
 
+@app.get("/simple", tags=["meta"], include_in_schema=False)
+def simple_chat_interface():
+    """
+    Serve the simple chat interface that works reliably
+    """
+    simple_path = os.path.join(ROOT_DIR, "web", "simple_chat.html")
+    if os.path.exists(simple_path):
+        return FileResponse(simple_path, media_type="text/html; charset=utf-8")
+
+    # Fallback if file doesn't exist
+    html = """<!doctype html><html><head><meta charset='utf-8'><title>Simple Chat</title></head>
+    <body style="font-family:system-ui,Segoe UI,Roboto;padding:24px;background:#1a202c;color:#e2e8f0">
+    <h2>Simple Chat Interface Not Found</h2>
+    <p>The simple chat interface file was not found. Please ensure simple_chat.html is in the web directory.</p>
+    <p><a href="/" style="color:#93c5fd">Return to Main Interface</a></p>
+    </body></html>"""
+    return Response(html, media_type="text/html; charset=utf-8")
+
+
 @app.get("/openapi.yaml", tags=["meta"])
 def openapi_yaml():
     """Serve OpenAPI schema as YAML for tooling compatibility."""
